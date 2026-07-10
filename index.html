@@ -3036,11 +3036,23 @@ init();
 
   function pbAnnexB(py, lamLT) {
     // Bending strength pb == Table 16 (rolled), per Annex B.2 (aLT = 7.0)
-    var pE = Math.PI * Math.PI * E_DESIGN / (lamLT * lamLT);
     var lamL0 = 0.4 * Math.sqrt(Math.PI * Math.PI * E_DESIGN / py);
+    if (lamLT <= lamL0) return py;                        // plateau, B.2.2
+    var pE = Math.PI * Math.PI * E_DESIGN / (lamLT * lamLT);
     var etaLT = Math.max(0, 7.0 * (lamLT - lamL0) / 1000);
     var phi = (py + (etaLT + 1) * pE) / 2;
     return pE * py / (phi + Math.sqrt(phi * phi - pE * py));
+  }
+
+  function channelUX(A, Sx, IyMinor, IxMajor, Iw, J) {
+    // Annex B.2.3, channels with equal flanges (all in mm units):
+    // u = (Iy.Sx^2.gamma/(A^2.H))^0.25, x = 1.132(A.H/(Iy.J))^0.5,
+    // gamma = 1 - Iy/Ix (cl. 4.3.6.7). H = warping constant.
+    var gamma = 1 - IyMinor / IxMajor;
+    return {
+      u: Math.pow(IyMinor * Sx * Sx * gamma / (A * A * Iw), 0.25),
+      x: 1.132 * Math.sqrt(A * Iw / (IyMinor * J))
+    };
   }
 
   function mTable26(M2, M3, M4, Mmax, M24) {
@@ -3086,7 +3098,7 @@ init();
     var worst = 0;
 
     if (sec.family === "box-hf" || sec.family === "box-cf") {
-      var cf = sec.family === "box-cf" ? 5 : 3;
+      var cf = 3; // P363: c = b-3t for both hot-finished and cold-formed
       var c_t = (sec.b - cf * sec.t) / sec.t;
       var d_t = (sec.h - cf * sec.t) / sec.t;
       var r1 = Math.min(Math.max(F_N / ((sec.h - cf * sec.t) * 2 * sec.t * py), -1), 1);
@@ -3096,7 +3108,7 @@ init();
       var flCo = Math.min(32 * eps, 62 * eps - 0.5 * d_t);
       worst = Math.max(grade(c_t, [flPl, flCo, 40 * eps]),
                        grade(d_t, [webPl, webCo, 120 * eps / (1 + 2 * r1)]));
-      out.lines.push(["b/t, d/t (Table 12" + (sec.family === "box-cf" ? ", cold-formed c=b-5t approx." : ", c=b-3t") + ")",
+      out.lines.push(["b/t, d/t (Table 12" + (sec.family === "box-cf" ? "" : ", c=b-3t") + ")",
         c_t.toFixed(2) + ", " + d_t.toFixed(2) + "  (limits " + flPl.toFixed(1) + " / " + webPl.toFixed(1) + " plastic)", names[worst], worst <= 2]);
       out.axialNonSlender = d_t <= 40 * eps && c_t <= 40 * eps;
     } else {
@@ -3134,22 +3146,33 @@ init();
     function line(l, sub, val, unit, ok) { rows.push({ label: l, sub: sub, val: val, unit: unit || "", status: ok === undefined ? "" : (ok ? "OK" : "Warning") }); }
     var f1 = function (v, d) { return Number(v).toFixed(d === undefined ? 3 : d); };
 
+    /* ---- Member loading (MasterKey header) ---- */
+    block("Member Loading and Member Forces");
+    line("Loading Combination", inp.combo || "\u03B3G\u00B7G + \u03B3Q\u00B7Q as run in RackFrame2D", "", "");
+    line("Axial Force (kN)  End1 / End2", "", f1(F) + "C / 0.000C", "");
+    line("Shear Force (kN)  End1 / End2", "", f1(Fv) + " / 0.000", "");
+    line("Bending Moment (kN.m)  End1 / End2", "", "-" + f1(Mx) + " / 0.000", "");
+
     /* ---- Classification ---- */
     var cl = classifySection(sec, py, F * 1000);
-    var b0 = block("Classification and Properties (BS 5950-1:2000)");
-    line("Section", sec.label + "  [py = " + py + " N/mm\u00B2, " + inp.grade + ", t = " + f1(sec.tgov, 1) + " mm, Table 9]", "", "");
+    var b0 = block("Classification and Properties (BS 5950: 2000)");
+    line("Section" + (sec.mass ? " (" + Number(Number(sec.mass).toFixed(2)) + " kg/m)" : ""), sec.label + "  [py = " + py + " N/mm\u00B2, " + inp.grade + ", t = " + f1(sec.tgov, 1) + " mm, Table 9]", "", "");
     cl.lines.forEach(function (L) { line(L[0], L[1], L[2] + (cl.axialNonSlender ? "  (Axial: Non-Slender)" : ""), "", L[3]); });
     if (cl.slender) line("WARNING", "Section is Slender \u2014 these checks are NOT valid for slender sections", "", "", false);
 
     var semi = cl.classIndex === 2;
 
-    /* ---- Local capacity ---- */
-    block("Local Capacity Check");
+    /* ---- Shear capacity ---- */
     var Pv;
     if (sec.family === "box-hf" || sec.family === "box-cf") Pv = 0.6 * py * A * sec.h / (sec.h + sec.b) / 1000;
     else Pv = 0.6 * py * sec.tw * sec.h / 1000;
     var highShear = Fv > 0.6 * Pv;
-    line("Fvx/Pvx", f1(Fv) + " / " + f1(Pv), f1(Fv / Pv), "", true);
+    block("Shear Capacity Check");
+    line("Fvx/Pvx", f1(Fv) + " / " + f1(Pv) + " =", f1(Fv / Pv), "", Fv <= Pv);
+
+    /* ---- Local capacity ---- */
+    block("Local Capacity Check");
+    line("Fvx/Pvx", f1(Fv) + " / " + f1(Pv) + " =", f1(Fv / Pv), "", true);
     line("", "", highShear ? "High Shear \u2014 moment reduction NOT applied, verify" : "Low Shear", "", !highShear);
     var Mcx = Math.min(py * S, 1.2 * py * Z) / 1e6;
     if (semi) Mcx = py * Z / 1e6;
@@ -3199,7 +3222,7 @@ init();
     var Pc = Math.min(Pcx, Pcy);
 
     /* ---- m factors ---- */
-    block("Equivalent Uniform Moment Factors mLT and mx");
+    block("Equivalent Uniform Moment Factors mLT, mx, my and myx");
     var mx = (inp._mxOverride != null) ? inp._mxOverride : mTable26(inp.M2, inp.M3, inp.M4, Mx, inp.M24);
     var mLT;
     if (inp._mLTOverride != null) { mLT = inp._mLTOverride; line("mLT", "test override", f1(mLT, 2), ""); }
@@ -3207,12 +3230,50 @@ init();
     else { mLT = mTable18(inp.M2, inp.M3, inp.M4, Mx); line("mLT = 0.2+(.15M2+.5M3+.15M4)/Mmax \u2265 0.44", "0.2+(.15x" + f1(inp.M2, 1) + "+.5x" + f1(inp.M3, 1) + "+.15x" + f1(inp.M4, 1) + ")/" + f1(Mx, 1), f1(mLT, 2), "  [Table 18]"); }
     line("mx = 0.2+(.1M2+.6M3+.1M4)/Mmax \u2265 .8M24/Mmax",
       "0.2+(.1x" + f1(inp.M2, 2) + "+.6x" + f1(inp.M3, 2) + "+.1x" + f1(inp.M4, 2) + ")/" + f1(Mx, 2) + " \u2265 .8x" + f1(inp.M24, 2) + "/" + f1(Mx, 2), f1(mx, 2), "  [Table 26]");
+    line("my = myx", "My = 0", "1", "  [Table 26]");
 
     /* ---- LTB ---- */
     block("Lateral Buckling Check Mb");
-    var Mb, ltbNote = "";
-    if (sec.family === "box-hf" || sec.family === "box-cf") {
-      Mb = Mcx; line("Mb = Mc", "Box section not susceptible to lateral torsional buckling (cl. 4.3.6.1)", f1(Mb), "kN.m");
+    var Mb, ltbNote = "", lamLTout = null, vOut = null, pbOut = null;
+    if (inp.Mcr_exact != null && inp.Mcr_exact > 0 && inp.C1_exact != null && inp.C1_exact > 0 && inp.axis !== "minor") {
+      /* FE eigensolver Mcr supplied -> BS equivalent slenderness via the
+         Perry-Robertson bridge lamLT = pi*sqrt(E*W/Mcr), W = Sx (plastic/
+         compact) or Zx (semi-compact). CRITICAL: BS 5950 Mb is a UNIFORM-
+         moment resistance (lamLT = u.v.lam.sqrt(betaW) has no moment-shape
+         term); the moment gradient is applied separately as mLT (Table 18)
+         on the demand in cl. 4.8.3.3 / Annex I. So the value fed here must be
+         the UNIFORM-moment critical moment Mcr(C1=1) = Mcr_actual / C1_eff,
+         otherwise the shape benefit is counted twice. Mcr in N.mm. (Without
+         C1_exact this branch is skipped and the verified analytical u.v.lam
+         estimate is used instead.) */
+      var Mcr_unifBS = inp.Mcr_exact / inp.C1_exact;
+      var WbsFE = (semi ? Z : S);
+      var lamLTfe = Math.PI * Math.sqrt(E_DESIGN * WbsFE / Mcr_unifBS);
+      var pbFE = pbAnnexB(py, lamLTfe);
+      lamLTout = lamLTfe; pbOut = pbFE;
+      Mb = Math.min(WbsFE * pbFE / 1e6, Mcx);
+      line("Mcr,unif (FE eigensolver)", "Mcr(actual)/C1 = " + f1(inp.Mcr_exact / 1e6, 2) + "/" + f1(inp.C1_exact, 3) + " = uniform-moment Mcr", f1(Mcr_unifBS / 1e6, 2), "kN.m");
+      line("\u03BBLT = \u03C0\u221A(E.W/Mcr)", E_DESIGN + ", W = " + f1(WbsFE / 1e3, 1) + " cm\u00B3 (" + (semi ? "Zx" : "Sx") + "), Mcr = " + f1(Mcr_unifBS / 1e6, 2), f1(lamLTfe, 1), "");
+      line("pb = Fn(py, \u03BBLT)", py + ", " + f1(lamLTfe, 1), f1(pbFE, 2), "N/mm\u00B2  [Annex B.2, rolled]");
+      line("Mb = Sx.pb \u2264 Mc", f1(WbsFE / 1e3, 1) + " x " + f1(pbFE, 2), f1(Mb, 3), "kN.m  [shape via mLT downstream]");
+    } else if (sec.family === "box-hf" || sec.family === "box-cf") {
+      /* Annex B.2.6 box (incl. RHS): lamLT = 2.25(phi_b.lam.betaW)^0.5,
+         gamma_b = (1 - Iy/Ix)(1 - J/2.6Ix). Square SHS: gamma_b = 0 -> Mb = Mc. */
+      var IxB = (sec.Iy_cm4 || 0) * 1e4, IyB = (sec.Iz_cm4 || 0) * 1e4, JB = (sec.IT_cm4 || 0) * 1e4;
+      var gamB = (IxB > 0 && JB > 0) ? Math.max((1 - IyB / IxB) * (1 - JB / (2.6 * IxB)), 0) : 0;
+      if (gamB < 1e-9) {
+        Mb = Mcx; line("Mb = Mc", "Box section \u2014 \u03B3b = 0 per Annex B.2.6 (square/near-square): not susceptible", f1(Mb), "kN.m");
+      } else {
+        var lamB = inp.KLT * inp.H / ry;
+        var betaWB = (semi ? Z / S : 1.0);
+        var phiB = Math.sqrt(S * S * gamB / (A * JB));
+        var lamLTB = 2.25 * Math.sqrt(phiB * lamB * betaWB);
+        var pbB = pbAnnexB(py, lamLTB);
+        Mb = Math.min((semi ? Z : S) * pbB / 1e6, Mcx);
+        lamLTout = lamLTB; pbOut = pbB;
+        line("\u03BBLT = 2.25(\u03C6b.\u03BB.\u03B2w)^0.5", "\u03C6b = " + f1(phiB) + ", \u03B3b = " + f1(gamB) + ", \u03BB = " + f1(lamB, 1) + "   [Annex B.2.6]", f1(lamLTB, 2), "");
+        line("Mb = Sx.pb \u2264 Mc", f1((semi ? Z : S) / 1e3, 1) + " x " + f1(pbB, 2), f1(Mb, 3), "kN.m");
+      }
     } else if (inp.axis === "minor") {
       Mb = Mcx; line("Mb = Mc", "Bending about the minor axis \u2014 LTB not applicable", f1(Mb), "kN.m");
     } else {
@@ -3221,36 +3282,94 @@ init();
       var v = 1 / Math.pow(1 + 0.05 * Math.pow(lam / sec.x, 2), 0.25);
       var lamLT = sec.u * v * lam * Math.sqrt(betaW);
       var pb = pbAnnexB(py, lamLT);
+      lamLTout = lamLT; vOut = v; pbOut = pb;
       Mb = Math.min((semi ? Z : S) * pb / 1e6, Mcx);
       line("Le = KLT.L", f1(inp.KLT, 1) + " x " + inp.H / 1000, f1(Le / 1000, 1), "m");
       line("\u03BB = Le/ry", f1(Le / 1000, 1) * 1000 / 1 + " / " + f1(ry, 1), f1(lam, 1), "");
-      line("v = Fn(x, \u03BB)", "x = " + f1(sec.x, 1) + (sec.uxApprox ? "  [u=0.9, x=D/T per cl. 4.3.6.8 \u2014 conservative approx.]" : "  [section tables]"), f1(v), "  [Table 19]");
+      line("v = Fn(x, \u03BB)", "x = " + f1(sec.x, 1) + (sec.uxApprox ? "  [u, x per Annex B.2.3 with approximated Iw \u2014 verify]" : "  [section tables]"), f1(v), "  [Table 19]");
       line("\u03BBLT = u.v.\u03BB.\u221A\u03B2w", f1(sec.u, 3) + " x " + f1(v) + " x " + f1(lam, 1) + " x \u221A" + f1(betaW, 3), f1(lamLT, 1), "");
       line("pb = Fn(py, \u03BBLT)", py + ", " + f1(lamLT, 1), f1(pb, 2), "N/mm\u00B2  [Table 16 / Annex B.2, rolled]");
       line("Mb = Sx.pb \u2264 Mc", f1((semi ? Z : S) / 1e3, 1) + " x " + f1(pb, 2), f1(Mb, 3), "kN.m");
     }
 
-    /* ---- Simplified interaction ---- */
-    block("Simplified Approach (cl. 4.8.3.3.1)");
+    /* ---- Interaction values (computed for all families) ---- */
     var pyZ = py * Z / 1e6;
-    line("py.Zx", py + " x " + f1(Z / 1e3, 1), f1(pyZ, 3), "kN.m");
     var s1 = F / Pc + mx * Mx / pyZ;
-    line("F/Pc + mx.Mx/py.Zx", f1(F, 2) + "/" + f1(Pc, 2) + " + " + f1(mx, 2) + "x" + f1(Mx, 1) + "/" + f1(pyZ, 1), f1(s1), "", s1 <= 1);
     var s2 = F / Pcy + mLT * Mx / Mb;
-    line("F/Pcy + mLT.MLT/Mb", f1(F, 2) + "/" + f1(Pcy, 2) + " + " + f1(mLT, 2) + "x" + f1(Mx, 1) + "/" + f1(Mb, 1), f1(s2), "", s2 <= 1);
     utils.simple1 = s1; utils.simple2 = s2;
-
-    /* ---- More exact (MasterKey-validated form) ---- */
     var e1 = null, e2 = null, Max = null;
+    var isIH = sec.family === "I" || sec.family === "H";
     if (!semi && Mrx !== null) {
-      block("More Exact Approach (cl. 4.8.3.3.2, as implemented by MasterKey)");
       Max = Mcx / (1 + 0.5 * F / Pcx);
-      line("Max = Mcx/(1+.5F/Pcx)", f1(Mcx, 1) + "/(1+.5x" + f1(F, 1) + "/" + f1(Pcx, 1) + ")", f1(Max), "kN.m");
       e1 = F / Pcx + mx * Mx / Max;
-      line("F/Pcx + mx.Mx/Max", f1(F, 1) + "/" + f1(Pcx, 1) + " + " + f1(mx, 2) + "x" + f1(Mx, 1) + "/" + f1(Max, 1), f1(e1), "", e1 <= 1);
-      e2 = F / Pcy + 0.5 * mLT * Mx / Mcx;
-      line("F/Pcy + .5mLT.MLT/Mcx", f1(F, 1) + "/" + f1(Pcy, 1) + " + .5x" + f1(mLT, 2) + "x" + f1(Mx, 1) + "/" + f1(Mcx, 1), f1(e2), "", e2 <= 1);
+      e2 = isIH ? (F / Pcy + mLT * Mx / Mb) : (F / Pcy + 0.5 * mLT * Mx / Mcx);
       utils.exact1 = e1; utils.exact2 = e2;
+    }
+
+    var AI = null;
+    var epsA = Math.sqrt(275 / py), lim858 = 85.8 * epsA;
+    var annexIApplies = isIH && !semi && Mrx !== null && inp.axis !== "minor" && lamLTout !== null &&
+      Math.min(lx, ly, lamLTout) < lim858;   // AD 301 condition 3
+    if (annexIApplies) {
+      /* ---- Annex I (I and H sections; AD 301 conditions: doubly symmetric,
+         Class 1/2, and at least one of lx/ly/lLT < 85.8*eps) ----
+         Max/May/Mab interpolate linearly between the short-strut value at
+         lam0 = 17.15*eps (lamRo for Mab) and the slender value at
+         lam1 = 85.8*eps; Max/May verified exactly against MasterKey. */
+      block("Combined Axial Compression and Bending to Annex I");
+      line("Annex I1 applicability", "Doubly symmetric, Class 1/2, min(\u03BBx, \u03BBy, \u03BBLT) = " + f1(Math.min(lx, ly, lamLTout), 1) + " < 85.8\u03B5 = " + f1(lim858, 1) + "   [AD 301]", "", "", true);
+      var eps = Math.sqrt(275 / py);
+      var lam1 = 85.8 * eps;   // Annex I1 revert point (= pi*sqrt(E/py); AD 301)
+      var lam0 = 17.15 * eps;
+      function interpI(lam, l0, Mhigh, Mlow) {
+        if (lam <= l0) return Mhigh;
+        if (lam >= lam1) return Mlow;
+        return Mhigh - (Mhigh - Mlow) * (lam - l0) / (lam1 - l0);
+      }
+      var rb = mLT * Mx / Mb, rc = F / Pcy;
+      var lamR = (rb * lamLTout + rc * ly) / (rb + rc);
+      var lamRo = lam0 * (2 * rb + rc) / (rb + rc);
+      var Mob = Mb * (1 - F / Pcy);
+      var Mxy = Mcx * Math.sqrt(1 - F / Pcy);
+      var Mox = Mcx * (1 - F / Pcx) / (1 + 0.5 * F / Pcx);
+      var Mcy = Math.min(py * (sec.Sz_cm3 || 0) * 1e3, 1.2 * py * (sec.Zz_cm3 || sec.Sz_cm3 || 0) * 1e3) / 1e6;
+      var Moy = Mcy * (1 - F / Pcy) / (1 + 1.0 * F / Pcy);
+      var Mab = Math.max(interpI(lamR, lamRo, Mrx, Mob), Mob);
+      Mab = Math.min(Mab, Mxy);   // Annex I.1: Mab <= Mxy cap
+      var MaxI = interpI(lx, lam0, Mrx, Mox);
+      var MayI = interpI(ly, lam0, Mcy, Moy);
+      var iax = mx * Mx / MaxI, iab = mLT * Mx / Mab;
+      line("rb=mLT.MLT/Mb", f1(mLT, 3) + "x" + f1(Mx, 1) + "/" + f1(Mb, 1), f1(rb), "");
+      line("rc=Fc/Pcy", f1(F, 1) + "/" + f1(Pcy, 1), f1(rc), "");
+      line("\u03BBr=(rb\u03BBLT+rc\u03BBy)/(rb+rc)", "(" + f1(rb) + "\u2022" + f1(lamLTout, 1) + "+" + f1(rc) + "\u2022" + f1(ly, 1) + ")/(" + f1(rb) + "+" + f1(rc) + ")", f1(lamR), "");
+      line("\u03BBro=17.15 \u03B5 (2rb+rc)/(rb+rc)", "17.15\u2022" + f1(eps) + "\u2022(2\u2022" + f1(rb) + "+" + f1(rc) + ")/(" + f1(rb) + "+" + f1(rc) + ")", f1(lamRo), "");
+      line("Mob= Mb(1-Fc/Pcy)", f1(Mb) + "(1-" + f1(F, 1) + "/" + f1(Pcy, 1) + ")", f1(Mob), "");
+      line("Mxy= Mcx(1-Fc/Pcy)\u00BD", f1(Mcx) + "(1-" + f1(F, 1) + "/" + f1(Pcy, 1) + ")\u00BD", f1(Mxy), "");
+      line("Mox= Mcx(1-Fc/Pcx)/(1+0.5Fc/Pcx)", f1(Mcx) + "(1-" + f1(F, 1) + "/" + f1(Pcx, 1) + ")/(1+0.5\u2022" + f1(F, 1) + "/" + f1(Pcx, 1) + ")", f1(Mox), "");
+      line("Moy= Mcy(1-Fc/Pcy)/(1+ky(Fc/Pcy))", f1(Mcy) + "(1-" + f1(F, 1) + "/" + f1(Pcy, 1) + ")/(1+1.0(" + f1(F, 1) + "/" + f1(Pcy, 1) + "))", f1(Moy), "");
+      line("Mab=fn( \u03BBr, \u03BBro, \u03B5, Mxy, Mob)", f1(lamR) + ", " + f1(lamRo) + ", " + f1(eps) + ", " + f1(Mxy) + ", " + f1(Mob) + "   [Mrx\u2192Mob interpolation, capped \u2264 Mxy; Annex I.1]", f1(Mab), "");
+      line("Max=fn( \u03BBx, \u03B5, Mrx, Mox)", f1(lx) + ", " + f1(eps) + ", " + f1(Mrx) + ", " + f1(Mox), f1(MaxI), "");
+      line("May=fn( \u03BBy, \u03B5, Mry, Moy)", f1(ly) + ", " + f1(eps) + ", " + f1(Mcy) + ", " + f1(Moy), f1(MayI), "");
+      line("mx.Mx/Max", f1(mx, 3) + "x" + f1(Mx, 1) + "/" + f1(MaxI, 1), f1(iax), "", iax <= 1);
+      line("mLT.MLT/Mab", f1(mLT, 3) + "x" + f1(Mx, 1) + "/" + f1(Mab, 1), f1(iab), "", iab <= 1);
+      line("mx.Mx/Max", f1(mx, 3) + "x" + f1(Mx, 1) + "/" + f1(MaxI, 1), f1(iax), "", iax <= 1);
+      var e3info = mx * Mx * (1 + 0.5 * F / Pcx) / (Mcx * (1 - F / Pcx));
+      line("Compare with Simplified to 4.8.3.3", f1(s1) + ", " + f1(s2) + ", " + f1(Math.max(s1, s2)) + "   [AD 301: Annex I1 and 4.8.3.3 unity factors are not directly comparable; both retained, worst governs]", f1(Math.max(s1, s2)), "");
+      line("Compare with MoreExact to 4.8.3.3", f1(e1) + ", " + f1(e2) + ", " + f1(e3info) + " (interactive, informational)", f1(Math.max(e1, e2)), "");
+      utils.annexI_ax = iax; utils.annexI_ab = iab;
+      AI = { rb: rb, rc: rc, lamR: lamR, lamRo: lamRo, Mob: Mob, Mxy: Mxy, Mox: Mox, Mcy: Mcy, Moy: Moy, Mab: Mab, MaxI: MaxI, MayI: MayI, iax: iax, iab: iab };
+    } else {
+      /* ---- Simplified interaction (channels, boxes, semi-compact, minor axis) ---- */
+      block("Simplified Approach (cl. 4.8.3.3.1)");
+      line("py.Zx", py + " x " + f1(Z / 1e3, 1), f1(pyZ, 3), "kN.m");
+      line("F/Pc + mx.Mx/py.Zx", f1(F, 2) + "/" + f1(Pc, 2) + " + " + f1(mx, 2) + "x" + f1(Mx, 1) + "/" + f1(pyZ, 1), f1(s1), "", s1 <= 1);
+      line("F/Pcy + mLT.MLT/Mb", f1(F, 2) + "/" + f1(Pcy, 2) + " + " + f1(mLT, 2) + "x" + f1(Mx, 1) + "/" + f1(Mb, 1), f1(s2), "", s2 <= 1);
+      if (e1 !== null) {
+        block("More Exact Approach (cl. 4.8.3.3.2, as implemented by MasterKey)");
+        line("Max = Mcx/(1+.5F/Pcx)", f1(Mcx, 1) + "/(1+.5x" + f1(F, 1) + "/" + f1(Pcx, 1) + ")", f1(Max), "kN.m");
+        line("F/Pcx + mx.Mx/Max", f1(F, 1) + "/" + f1(Pcx, 1) + " + " + f1(mx, 2) + "x" + f1(Mx, 1) + "/" + f1(Max, 1), f1(e1), "", e1 <= 1);
+        line("F/Pcy + .5mLT.MLT/Mcx", f1(F, 1) + "/" + f1(Pcy, 1) + " + .5x" + f1(mLT, 2) + "x" + f1(Mx, 1) + "/" + f1(Mcx, 1), f1(e2), "", e2 <= 1);
+      }
     }
 
     /* ---- Deflections (app's own combination, per user instruction) ---- */
@@ -3265,10 +3384,10 @@ init();
     }
 
     /* ---- Governing summary ---- */
-    var names = { local: "Local capacity (4.8.2.3)", simple1: "Buckling, major (4.8.3.3.1)", simple2: "Buckling, LTB (4.8.3.3.1)", exact1: "Buckling, major (4.8.3.3.2)", exact2: "Buckling, LTB (4.8.3.3.2)", sway: "Lateral sway H/150", inspan: "In-span deflection H/360" };
+    var names = { local: "Local capacity (4.8.2.3)", simple1: "Buckling, major (4.8.3.3.1)", simple2: "Buckling, LTB (4.8.3.3.1)", exact1: "Buckling, major (4.8.3.3.2)", exact2: "Buckling, LTB (4.8.3.3.2)", annexI_ax: "Annex I, major axis", annexI_ab: "Annex I, lateral buckling", sway: "Lateral sway H/150", inspan: "In-span deflection H/360" };
     var gk = null, gv = -1;
     Object.keys(utils).forEach(function (k) { if (utils[k] > gv) { gv = utils[k]; gk = k; } });
-    return { blocks: blocks, utils: utils, governing: { key: gk, name: names[gk], value: gv, pass: gv <= 1 && !cl.slender && !highShear }, slender: cl.slender, highShear: highShear, derived: { Pv: Pv, Mcx: Mcx, Pz: Pz, n: n, Mrx: Mrx, Pcx: Pcx, Pcy: Pcy, mx: mx, mLT: mLT, Mb: Mb, Max: Max, s1: s1, s2: s2, e1: e1, e2: e2, localU: localU, lx: lx, ly: ly } };
+    return { blocks: blocks, utils: utils, governing: { key: gk, name: names[gk], value: gv, pass: gv <= 1 && !cl.slender && !highShear }, slender: cl.slender, highShear: highShear, derived: { Pv: Pv, Mcx: Mcx, Pz: Pz, n: n, Mrx: Mrx, Pcx: Pcx, Pcy: Pcy, mx: mx, mLT: mLT, Mb: Mb, Max: Max, s1: s1, s2: s2, e1: e1, e2: e2, localU: localU, lx: lx, ly: ly, lamLT: lamLTout, v: vOut, pb: pbOut, AI: AI } };
   }
 
   /* ------------------------------------------------------------------
@@ -3307,12 +3426,418 @@ init();
     return { H: H, F: F, Fv: Fv, Mmax: Mmax, M2: M2, M3: M3, M4: M4, M24: M24, at: at, segments: segs.length };
   }
 
-  /* PFC supplementary data: verified u/x/d for the section MasterKey
-     validated; others fall back to cl. 4.3.6.8 (u=0.9, x=D/T) and
-     d = h - 2tf, all flagged on the sheet. */
-  var PFC_UX = { "200 x 90 x 30": { u: 0.954, x: 12.9, d: 148 } };
+  /* PFC supplementary data from SCI P363 (Blue Book): d = depth between
+     fillets (mm), Iw = warping constant (dm6), y0 = centroid-to-shear-
+     centre distance (mm, computed from P363 e0 via y0 = e0 + cz - tw/2).
+     BS-mode u/x are computed from Annex B.2.3 using these; the two entries
+     marked with u/x were additionally verified against MasterKey output. */
+  var PFC_UX = {
+    "430 x 100 x 64": { d: 362, Iw_dm6: 0.219000, y0: 53.45 },
+    "380 x 100 x 54": { d: 315, Iw_dm6: 0.150000, y0: 57.96 },
+    "300 x 100 x 46": { d: 237, Iw_dm6: 0.081300, y0: 62.78 },
+    "300 x 90 x 41":  { d: 245, Iw_dm6: 0.058100, y0: 53.27 },
+    "260 x 90 x 35":  { d: 208, Iw_dm6: 0.037900, y0: 56.50 },
+    "260 x 75 x 28":  { d: 212, Iw_dm6: 0.020300, y0: 43.92 },
+    "230 x 90 x 32":  { d: 178, Iw_dm6: 0.027900, y0: 60.12 },
+    "230 x 75 x 26":  { d: 181, Iw_dm6: 0.015300, y0: 47.54 },
+    "200 x 90 x 30":  { u: 0.954, x: 12.9, d: 148, Iw_dm6: 0.019700, y0: 63.70 },
+    "200 x 75 x 23":  { d: 151, Iw_dm6: 0.010700, y0: 50.80 },
+    "180 x 90 x 26":  { d: 131, Iw_dm6: 0.014100, y0: 64.71 },
+    "180 x 75 x 20":  { d: 135, Iw_dm6: 0.007540, y0: 50.01 },
+    "150 x 90 x 24":  { d: 102, Iw_dm6: 0.008900, y0: 66.87 },
+    "150 x 75 x 18":  { d: 106, Iw_dm6: 0.004670, y0: 52.90 },
+    "125 x 65 x 15":  { d:  82, Iw_dm6: 0.001940, y0: 45.30 },
+    "100 x 50 x 10":  { d:  65, Iw_dm6: 0.000491, y0: 34.24 }
+  };
 
-  var ENGINE = { pyTable9: pyTable9, pcAnnexC: pcAnnexC, pbAnnexB: pbAnnexB, mTable26: mTable26, mTable18: mTable18, strutCurves: strutCurves, classifySection: classifySection, designColumn: designColumn, stitchColumn: stitchColumn, PFC_UX: PFC_UX, E_DESIGN: E_DESIGN };
+  /* ==================================================================
+     EN 1993-1-1 (EC3, UK NA) ENGINE — reverse-engineered from MasterKey
+     EN 1993:2006 output and verified against it. gammaM0 = gammaM1 = 1.
+     Design E = 210000 N/mm2 (EN 1993-1-1 cl. 3.2.6), G = E/2.6.
+     ================================================================== */
+  var E_EC3 = 210000, G_EC3 = E_EC3 / 2.6;
+  var EC3_ALPHA = { a0: 0.13, a: 0.21, b: 0.34, c: 0.49, d: 0.76 };
+
+  function chiEC3(lamBar, curve) {
+    // Flexural buckling reduction chi, cl. 6.3.1.2
+    if (lamBar <= 0.2) return 1;
+    var a = EC3_ALPHA[curve];
+    var phi = 0.5 * (1 + a * (lamBar - 0.2) + lamBar * lamBar);
+    return Math.min(1, 1 / (phi + Math.sqrt(phi * phi - lamBar * lamBar)));
+  }
+  function chiLT_EC3(lamLT, curve) {
+    // LTB reduction, rolled-section method cl. 6.3.2.3 (beta=0.75, lam0=0.4)
+    var lam0 = 0.4, beta = 0.75;
+    if (lamLT <= lam0) return { chi: 1, phi: 0.5 };
+    var a = EC3_ALPHA[curve];
+    var phi = 0.5 * (1 + a * (lamLT - lam0) + beta * lamLT * lamLT);
+    var chi = 1 / (phi + Math.sqrt(Math.max(phi * phi - beta * lamLT * lamLT, 0)));
+    chi = Math.min(chi, 1, 1 / (lamLT * lamLT));
+    return { chi: chi, phi: phi };
+  }
+  function ec3StrutCurves(family, h, b, tf) {
+    if (family === "box-hf") return { y: "a", z: "a" };
+    if (family === "box-cf") return { y: "c", z: "c" };
+    if (family === "channel") return { y: "c", z: "c" };
+    var hb = h / b;
+    if (tf > 40) return hb > 1.2 ? { y: "b", z: "c" } : { y: "d", z: "d" };
+    return hb > 1.2 ? { y: "a", z: "b" } : { y: "b", z: "c" };
+  }
+  function ec3LTBCurve(family, h, b) {
+    if (family === "channel") return "d";               // verified vs MasterKey
+    var hb = h / b;
+    return hb <= 2 ? "b" : (hb <= 3.1 ? "c" : "d");     // UK NA (rolled, 6.3.2.3)
+  }
+  function ec3LTBCurveGeneral(family, h, b) {
+    // EN 1993-1-1 Table 6.4, general case (cl. 6.3.2.2): rolled I/H a/b by h/b,
+    // everything else "other cross-section" -> d. Used with an exact (FE) Mcr,
+    // where beta = 1.0 and lamLT,0 = 0.2 (same Perry form as flexural chi).
+    if (family === "channel" || family === "box-hf" || family === "box-cf") return "d";
+    return (h / b) <= 2 ? "a" : "b";
+  }
+  function c1QuarterPoint(M2, M3, M4, Mmax) {
+    // Serna et al (2006) quarter-point expression, recommended by SCI for
+    // non-linear bending moment diagrams (D. Brown, NSC Nov/Dec 2013):
+    // C1 = sqrt(35Mmax^2/(Mmax^2+9M2^2+16M3^2+9M4^2)). Verified against the
+    // article's LTBeam benchmarks. Fork-end conditions assumed; conservative.
+    if (!(Mmax > 0)) return 1;
+    var c = Math.sqrt(35 * Mmax * Mmax / (Mmax * Mmax + 9 * M2 * M2 + 16 * M3 * M3 + 9 * M4 * M4));
+    return Math.min(Math.max(c, 1), 2.7);
+  }
+  function c1EC3(M2, M3, M4, Mmax, psi) {
+    // Dispatch per SCI NSC Nov/Dec 2013: linear diagrams use the expression
+    // derived from kc (Table 6.6), C1 = 1.77 - 0.88psi + 0.11psi^2; anything
+    // non-linear uses the Serna quarter-point expression.
+    if (!(Mmax > 0)) return 1;
+    var p = (psi == null) ? 0 : Math.min(Math.max(psi, -1), 1);
+    var lin2 = Math.abs(M2 / Mmax - Math.abs(0.75 + 0.25 * p)) < 0.02;
+    var lin3 = Math.abs(M3 / Mmax - Math.abs(0.50 + 0.50 * p)) < 0.02;
+    var lin4 = Math.abs(M4 / Mmax - Math.abs(0.25 + 0.75 * p)) < 0.02;
+    if (lin2 && lin3 && lin4) return Math.min(Math.max(1.77 - 0.88 * p + 0.11 * p * p, 1), 2.7);
+    return c1QuarterPoint(M2, M3, M4, Mmax);
+  }
+  function cmTableB3(alphaS) {
+    // Table B.3: diagram with max at the support, transverse loading
+    if (alphaS >= 0) return Math.max(0.2 + 0.8 * alphaS, 0.4);
+    return Math.max(0.1 - 0.8 * alphaS, 0.4);
+  }
+  function channelShearCentreY0(h, b, tw, tf) {
+    // Approximate centroid-to-shear-centre distance for a PFC (no fillets)
+    var bp = b - tw / 2, hp = h - tf;
+    var e = 3 * tf * bp * bp / (6 * bp * tf + hp * tw);          // web CL -> SC
+    var Af = 2 * (b - tw) * tf, Aw = h * tw, Ac = Af + Aw;
+    var xbar = (Aw * tw / 2 + Af * (tw + (b - tw) / 2)) / Ac;    // web back -> centroid
+    return e + (xbar - tw / 2);
+  }
+  function channelIw(h, b, tw, tf) {
+    // Approximate warping constant for a PFC (centreline theory), mm^6
+    var bp = b - tw / 2, hp = h - tf;
+    return (Math.pow(bp, 3) * hp * hp * tf / 12) * (2 * hp * tw + 3 * bp * tf) / (hp * tw + 6 * bp * tf);
+  }
+
+  function classifyEC3(sec, fy, F_N) {
+    var eps = Math.sqrt(235 / fy);
+    var names = ["Class 1", "Class 2", "Class 3", "Class 4"];
+    var out = { lines: [], slender: false };
+    function grade(r, lims) { for (var i = 0; i < 3; i++) if (r <= lims[i]) return i; return 3; }
+    var worst = 0;
+    if (sec.family === "box-hf" || sec.family === "box-cf") {
+      var cc = 3; // P363: c = b-3t for both hot-finished and cold-formed
+      var c_t = (sec.b - cc * sec.t) / sec.t, d_t = (sec.h - cc * sec.t) / sec.t;
+      var cint = (sec.h - cc * sec.t);
+      var al = Math.min(1, 0.5 + F_N / (4 * cint * sec.t * fy));
+      var w1 = al > 0.5 ? 396 * eps / (13 * al - 1) : 36 * eps / al;
+      var w2 = al > 0.5 ? 456 * eps / (13 * al - 1) : 41.5 * eps / al;
+      worst = Math.max(grade(c_t, [33 * eps, 38 * eps, 42 * eps]), grade(d_t, [w1, w2, 42 * eps]));
+      out.lines.push(["c/t flange, web (Table 5.2" + (sec.family === "box-cf" ? "" : ", c=b-3t") + ")",
+        c_t.toFixed(2) + ", " + d_t.toFixed(2), names[worst], worst <= 2]);
+    } else {
+      var r = sec.rFillet || 0;
+      var cOut = (sec.family === "channel" ? (sec.b - sec.tw - r) : (sec.b - sec.tw - 2 * r) / 2);
+      var cf_t = cOut / sec.tf;
+      var d = sec.d_fillets, dt = d / sec.tw;
+      var alw = Math.min(1, 0.5 + F_N / (2 * d * sec.tw * fy));
+      var w1b = alw > 0.5 ? 396 * eps / (13 * alw - 1) : 36 * eps / alw;
+      var w2b = alw > 0.5 ? 456 * eps / (13 * alw - 1) : 41.5 * eps / alw;
+      worst = Math.max(grade(cf_t, [9 * eps, 10 * eps, 14 * eps]), grade(dt, [w1b, w2b, 62 * eps]));
+      out.lines.push(["c/t flange, web (Table 5.2; alpha=" + alw.toFixed(3) + ")",
+        cf_t.toFixed(2) + ", " + dt.toFixed(2), names[worst], worst <= 2]);
+    }
+    out.cls = names[worst]; out.classIndex = worst; out.slender = worst === 3;
+    return out;
+  }
+
+  /* Full EN 1993-1-1 member check. Output mirrors the MasterKey
+     EN 1993:2006 printout line-for-line: block titles, formula labels,
+     workings column, result formats and status texts. */
+  function designColumnEC3(inp) {
+    var sec = inp.sec, fy = inp.py;
+    var A = sec.A_cm2 * 100;
+    var Wpl = sec.S_cm3 * 1e3, Wel = sec.Z_cm3 * 1e3;
+    var Wplz = (sec.Sz_cm3 || sec.S_cm3) * 1e3;
+    var iy = sec.rx_cm * 10, iz = sec.ry_cm * 10;
+    var Iy = (sec.Iy_cm4 || 0) * 1e4, Iz = (sec.Iz_cm4 || 0) * 1e4, It = (sec.IT_cm4 || 0) * 1e4;
+    var Iw = (sec.Iw_dm6 || 0) * 1e12;
+    var NEd = Math.max(inp.F, 0) * 1000, MyEd = Math.abs(inp.Mx) * 1e6, VEd = Math.abs(inp.Fv || 0) * 1000;
+    var blocks = [], rows = [], utils = {};
+    function block(t) { var b = { title: t, rows: [] }; blocks.push(b); rows = b.rows; return b; }
+    function line(l, sub, val, unit, st) { rows.push({ label: l, sub: sub, val: val, unit: unit || "", status: st === undefined ? "" : st }); }
+    function OK(c) { return c ? "OK" : "Warning"; }
+    var f3 = function (v) { return Number(v).toFixed(3); };
+    var fT = function (v, d) { return String(Number(Number(v).toFixed(d == null ? 3 : d))); }; // trimmed
+    var isBox = sec.family === "box-hf" || sec.family === "box-cf";
+    var isChan = sec.family === "channel";
+    var Lm = inp.H / 1000;
+    var sup = { 1: "\u00B9", 2: "\u00B2" };
+    function pw(x) { return sup[x] || ("^" + fT(x, 2)); }
+
+    /* ---- Member loading ---- */
+    block("Member Loading and Member Forces");
+    line("Loading Combination", (inp.combo || "\u03B3G\u00B7G + \u03B3Q\u00B7Q as run in RackFrame2D"), "", "");
+    line("Axial Force (kN)  End1 / End2", "", fT(inp.F, 3) + "C / 0.000C", "");
+    line("Shear Force (kN)  End1 / End2", "", fT(inp.Fv || 0, 3) + " / 0.000", "");
+    line("Bending Moment (kN.m)  End1 / End2", "", "-" + fT(Math.abs(inp.Mx), 3) + " / 0.000", "");
+    if (inp.defl) line("Maximum Deflection (mm)", "", fT(inp.defl.inspan, 2), "");
+
+    /* ---- Classification ---- */
+    var cl = classifyEC3(sec, fy, NEd);
+    var semi = cl.classIndex === 2;
+    var Wy = semi ? Wel : Wpl;
+    block("Classification and Effective Area (EN 1993: 2006)");
+    line("Section" + (sec.mass ? " (" + fT(sec.mass, 2) + " kg/m)" : ""), sec.label + "  [" + inp.grade + ", fy = " + fy + ", t = " + fT(sec.tgov, 1) + " mm]", "", "");
+    var rbT = isBox ? (sec.b - 3 * sec.t) / sec.t : (isChan ? sec.b / sec.tf : sec.b / (2 * sec.tf));
+    var rdt = isBox ? (sec.h - 3 * sec.t) / sec.t : sec.d_fillets / sec.tw;
+    line("Class = Fn(b/T,d/t,fy,N,My,Mz)", fT(rbT, 2) + ", " + fT(rdt, 2) + ", " + fy + ", " + fT(NEd / 1000, 2) + ", " + fT(MyEd / 1e6, 2) + ", 0", cl.cls, "", "(Axial: " + (cl.classIndex <= 2 ? "Non-Slender" : "Slender") + ")");
+    if (cl.slender) line("WARNING", "Class 4 \u2014 effective-section method not implemented; checks not valid", "", "", "Warning");
+
+    /* ---- Shear + Local capacity ---- */
+    var r = sec.rFillet || 0, Av;
+    if (isBox) Av = A * sec.h / (sec.h + sec.b);
+    else if (isChan) Av = A - 2 * sec.b * sec.tf + (sec.tw + r) * sec.tf;
+    else Av = Math.max(A - 2 * sec.b * sec.tf + (sec.tw + 2 * r) * sec.tf, (sec.h - 2 * sec.tf) * sec.tw);
+    var Vpl = Av * fy / Math.sqrt(3);
+    var highShear = VEd > 0.5 * Vpl;
+    block("Shear Capacity Check");
+    line("Vy.Ed/Vpl.y.Rd", fT(VEd / 1000, 3) + " / " + fT(Vpl / 1000, 3) + " =", f3(VEd / Vpl), "", OK(VEd <= Vpl));
+    block("Local Capacity Check");
+    line("Vy.Ed/Vpl.y.Rd", fT(VEd / 1000, 3) + " / " + fT(Vpl / 1000, 3) + " =", f3(VEd / Vpl), "", highShear ? "High Shear" : "Low Shear");
+    if (highShear) line("", "High shear \u2014 moment reduction to cl. 6.2.8 NOT applied", "", "", "Warning");
+    var Mc = Wy * fy;
+    line("Mc.y.Rd = fy.W" + (semi ? "el" : "pl") + ".y/ \u03B3M0", fy + " x " + fT(Wy / 1e3, 1) + "/1", f3(Mc / 1e6) + " kN.m", "");
+    var Npl = A * fy;
+    line("Npl.Rd = Ag.fy/ \u03B3M0", fT(A / 100, 2) + "x" + fy + "/1 =", fT(Npl / 1000, 3) + " kN", "");
+    var n = NEd / Npl;
+    var localU, MN, WplN = Wpl, nDisp = n, exempt = false, aExp, bExp;
+    if (isChan) {
+      /* channel: MasterKey applies the reduced-modulus machinery (verified) */
+      var webShare = sec.tw * (sec.h - 2 * sec.tf) / A;
+      if (!semi && n <= webShare) WplN = Wpl - Math.pow(A * n, 2) / (4 * sec.tw);
+      MN = Math.min(WplN * fy, Mc);
+      aExp = 1; bExp = 1;
+    } else if (isBox) {
+      /* hollow: cl. 6.2.9.1(6) */
+      var aw = Math.min((A - 2 * sec.b * sec.t) / A, 0.5);
+      MN = semi ? Mc : Math.min(Wpl * fy * (1 - n) / (1 - 0.5 * aw), Mc);
+      WplN = MN / fy;
+      aExp = Math.min(1.66 / Math.max(1 - 1.13 * n * n, 0.2767), 6); bExp = aExp;
+    } else {
+      /* I/H: cl. 6.2.9.1(4) exemption else (5) */
+      var aF = Math.min((A - 2 * sec.b * sec.tf) / A, 0.5);
+      exempt = NEd <= 0.25 * Npl && NEd <= 0.5 * (sec.h - 2 * sec.tf) * sec.tw * fy;
+      if (semi) MN = Mc;
+      else if (exempt) { MN = Mc; nDisp = 0; }
+      else MN = Math.min(Wpl * fy * (1 - n) / (1 - 0.5 * aF), Mc);
+      WplN = MN / fy;
+      aExp = 2; bExp = Math.max(5 * n, 1);
+    }
+    line("n = NEd/Npl.Rd", (exempt ? "0" : fT(NEd / 1000, 3)) + " / " + fT(Npl / 1000, 3) + " =" + (exempt ? "   [6.2.9.1(4): no reduction]" : ""), f3(nDisp), "", OK(n <= 1));
+    line("Wpl.N.y = Fn(Wpl.y, Avy, n   )", fT(Wpl / 1e3, 1) + ", " + fT(Av / 100, 3) + ", " + f3(nDisp), fT(WplN / 1e3, 2) + " cm\u00B3", "");
+    line("M.N.y.Rd = Wpl.N.y.fy/ \u03B3M0", fT(WplN / 1e3, 2) + " x " + fy + "/1", f3(MN / 1e6) + " kN.m", "");
+    localU = semi ? (NEd / Npl + MyEd / Mc) : Math.pow(MyEd / MN, aExp);
+    line("(My.Ed/MN.y.Rd) " + pw(aExp) + " +(Mz.Ed/MN.z.Rd) " + pw(bExp === Math.round(bExp) ? bExp : bExp),
+      "(" + f3(MyEd / 1e6) + "/" + f3(MN / 1e6) + ")" + pw(aExp) + "+(0)" + pw(1) + "=", f3(localU), "", OK(localU <= 1));
+    utils.local = localU;
+
+    /* ---- Compression resistance ---- */
+    block("Compression Resistance N.b.Rd");
+    var crv = ec3StrutCurves(sec.family, sec.h, sec.b, sec.tf || 0);
+    var Ley = inp.Kx * inp.H, Lez = inp.Ky * inp.H;
+    var NcrY = Math.PI * Math.PI * E_EC3 * Iy / (Ley * Ley);
+    var NcrZ = Math.PI * Math.PI * E_EC3 * Iz / (Lez * Lez);
+    var lamYb = Math.sqrt(A * fy / NcrY), lamZb = Math.sqrt(A * fy / NcrZ);
+    var chiY = chiEC3(lamYb, crv.y), chiZ = chiEC3(lamZb, crv.z);
+    var NbY = chiY * A * fy, NbZ = chiZ * A * fy;
+    line("Ley = Ky.Ly", fT(inp.Kx, 2) + "x" + fT(Lm, 2) + " =", fT(Ley / 1000, 3), "");
+    line("\u03BBy = \u221AA.fy/Ncr", "\u221A" + fT(A / 100, 2) + "x" + fy + "/" + fT(NcrY / 1000, 2), f3(lamYb), "");
+    line("\u03BBy = Ley/iy", "100x" + fT(Ley / 1000, 2) + "/" + fT(iy / 10, 2) + " =", fT(Ley / iy, 1), "", OK(Ley / iy <= 180));
+    line("Nb.y.Rd = Area.\u03C7.fy/ \u03B3M1", fT(A / 100, 2) + "x" + f3(chiY) + "x" + fy + "/10/1 =", f3(NbY / 1000) + " kN", "", "Curve " + crv.y);
+    line("Lez = Kz.Lz", fT(inp.Ky, 2) + "x" + fT(Lm, 2) + " =", fT(Lez / 1000, 3), "");
+    line("\u03BBz = Lez/iz", "100x" + fT(Lez / 1000, 2) + "/" + fT(iz / 10, 2) + " =", fT(Lez / iz, 1), "", OK(Lez / iz <= 180));
+    line("\u03BBz = \u221AA.fy/Ncrz", "\u221A" + fT(A / 100, 2) + "x" + fy + "/" + fT(NcrZ / 1000, 2), f3(lamZb), "");
+    line("Nb.z.Rd = Area.\u03C7.fy/ \u03B3M1", fT(A / 100, 2) + "x" + f3(chiZ) + "x" + fy + "/10/1 =", f3(NbZ / 1000) + " kN", "", "Curve " + crv.z);
+    var NbT = null, NcrT = null, NcrTF = null, lamT = null;
+    if (!isBox && It > 0 && inp.axis !== "minor") {
+      var LeT = (inp.KT || 1.0) * inp.H;
+      var y0 = isChan ? (sec.y0 || 0) : 0;
+      var i02 = iy * iy + iz * iz + y0 * y0;
+      NcrT = (G_EC3 * It + Math.PI * Math.PI * E_EC3 * Iw / (LeT * LeT)) / i02;
+      if (y0 > 0) {
+        var bTF = 1 - (y0 * y0) / i02, sum = NcrY + NcrT;
+        NcrTF = (sum / (2 * bTF)) * (1 - Math.sqrt(1 - 4 * bTF * NcrY * NcrT / (sum * sum)));
+      } else NcrTF = NcrT;
+      var NcrGov = Math.min(NcrT, NcrTF);
+      lamT = Math.sqrt(A * fy / NcrGov);
+      var chiT = chiEC3(lamT, crv.z);
+      NbT = chiT * A * fy;
+      line("Let = Kt.Lx", fT(inp.KT || 1, 2) + "x" + fT(Lm, 2) + " =", fT(LeT / 1000, 3), "");
+      if (y0 > 0) line("NcrT = min(NcrT,NcrtF)", "min(" + fT(NcrT / 1000, 2) + ", " + fT(NcrTF / 1000, 2) + ")" + (sec.y0Approx ? "   [y0 approximated]" : ""), fT(NcrGov / 1000, 2), "");
+      line("\u03BBT = \u221AA.fy/NcrT", "\u221A" + fT(A / 100, 2) + "x" + fy + "/" + fT(NcrGov / 1000, 2), f3(lamT), "");
+      line("Nb.T.Rd = Area.\u03C7.fy/ \u03B3M1", fT(A / 100, 2) + "x" + f3(chiT) + "x" + fy + "/10/1 =", f3(NbT / 1000) + " kN", "", "Curve " + crv.z);
+      utils.un_t = NEd / NbT;
+    }
+
+    /* ---- Equivalent uniform moment factors ---- */
+    block("Equivalent Uniform Moment Factors C1, C.mLT, C.mz, and C.my");
+    var Mmax = Math.abs(inp.Mx);
+    var C1 = (inp._C1Override != null) ? inp._C1Override : c1EC3(inp.M2, inp.M3, inp.M4, Mmax, inp.psi);
+    var Ms = inp.alphaS != null ? inp.alphaS * Mmax : inp.M3;
+    var Mo = Ms - Mmax / 2, mu = Mmax > 0 ? Mo / Mmax : 0;
+    line("C1= fn(M1, M2, Mo, \u03C8,\u03BC)", "-" + fT(Mmax, 1) + ", 0.0, -" + fT(Math.abs(Mo), 1) + ", 0.000, " + f3(Math.abs(mu)) + (inp._C1Override != null ? "" : "   [Serna/SCI quarter-point expression, NSC Nov 2013]"), f3(C1), "", "Point");
+    var alphaS = Math.min(Math.max(inp.alphaS != null ? inp.alphaS : (Mmax > 0 ? inp.M3 / Mmax : 0), -1), 1);
+    var CmLT = cmTableB3(alphaS), Cmy = CmLT, Cmz = 1.0;
+    var cmSub = "Mh= -" + fT(Mmax, 2) + ", Ms= -" + fT(Math.abs(Ms), 1) + ", \u03C8 = 0.000, \u03B1s= " + f3(alphaS);
+    line("CmLT=Max(0.2+0.8\u03B1s, 0.4)", cmSub, f3(CmLT), "", "Table B.3");
+    line("Cmz=Max(0.6+0.4\u03C8, 0.4)", "M = 0, \u03C8 = 1.000", "1", "", "Table B.3");
+    line("Cmy=Max(0.2+0.8\u03B1s, 0.4)", cmSub, f3(Cmy), "", "Table B.3");
+
+    /* ---- Lateral buckling ---- */
+    block("Lateral Buckling Check M.b.Rd");
+    var Mb, chiLT = 1, chiMod = 1, lamLT = 0, kc = 1, fFac = 1, susceptible = false;
+    if (inp.Mcr_exact != null && inp.Mcr_exact > 0 && !isBox && inp.axis !== "minor") {
+      /* FE eigensolver Mcr supplied. EN 1993-1-1 carries the moment shape in
+         Mcr itself (via C1), so the actual-BMD Mcr is used directly here;
+         C.mLT still applies in the interaction (6.61/6.62) as a distinct
+         second-order mechanism, no double count. lamLT = sqrt(Wy.fy/Mcr),
+         Mcr in N.mm. Two code-legitimate reduction routes:
+           - default: general case cl. 6.3.2.2 (beta = 1, lamLT,0 = 0.2,
+             Table 6.4 curve, no f) - clean pairing for an exact Mcr;
+           - if the solver also returns the effective C1 (= Mcr/Mcr_uniform),
+             the rolled method cl. 6.3.2.3 (beta = 0.75, lamLT,0 = 0.4, UK-NA
+             curve, chiLT,mod with kc = 1/sqrt(C1_eff)) is used - this matches
+             MasterSeries/MasterKey and does NOT double count because kc is
+             taken from the genuine effective C1, not re-derived. */
+      var LeFE = inp.KLT * inp.H;
+      lamLT = Math.sqrt(Wy * fy / inp.Mcr_exact);
+      var haveC1 = (inp.C1_exact != null && inp.C1_exact > 0);
+      var curveLTfe, methodTag;
+      if (haveC1) {
+        curveLTfe = ec3LTBCurve(sec.family, sec.h, sec.b);
+        var xrfe = chiLT_EC3(lamLT, curveLTfe);
+        chiLT = xrfe.chi;
+        kc = Math.min(1, 1 / Math.sqrt(inp.C1_exact));
+        fFac = Math.min(1, 1 - 0.5 * (1 - kc) * (1 - 2 * Math.pow(lamLT - 0.8, 2)));
+        chiMod = Math.min(chiLT / fFac, 1, lamLT > 0.01 ? 1 / (lamLT * lamLT) : 1);
+        methodTag = "6.3.2.3 rolled, C1eff = " + f3(inp.C1_exact);
+        line("Mcr (FE eigensolver)", "exact elastic critical moment, actual BMD; C1,eff = " + f3(inp.C1_exact), f3(inp.Mcr_exact / 1e6) + " kN.m", "");
+        line("\u03BBLT = \u221A W.fy/Mcr", "\u221A " + fT(Wy / 1e3, 1) + " x " + fy + " / " + f3(inp.Mcr_exact / 1e6), f3(lamLT), "");
+        line("\u03B3LT = Fn(\u03BBLT, \u03C6LT, \u03B2, \u03BBLT0)", f3(lamLT) + ", " + f3(xrfe.phi) + ", 0.750, 0.400", f3(chiLT), "", "Curve " + curveLTfe);
+        line("\u03B3LT.mod = Fn(\u03B3LT.\u03BBLT,kc,f)", f3(chiLT) + ", " + f3(lamLT) + ", " + f3(kc) + ", " + f3(fFac), f3(chiMod), "", "6.3.2.3");
+      } else {
+        curveLTfe = ec3LTBCurveGeneral(sec.family, sec.h, sec.b);
+        chiLT = chiEC3(lamLT, curveLTfe);   // 6.3.2.2 general form: beta=1, lamLT,0=0.2
+        kc = 1; fFac = 1; chiMod = chiLT;
+        methodTag = "6.3.2.2 general (no C1 supplied)";
+        line("Mcr (FE eigensolver)", "exact elastic critical moment, actual BMD; general case, no f", f3(inp.Mcr_exact / 1e6) + " kN.m", "");
+        line("\u03BBLT = \u221A W.fy/Mcr", "\u221A " + fT(Wy / 1e3, 1) + " x " + fy + " / " + f3(inp.Mcr_exact / 1e6), f3(lamLT), "");
+        line("\u03B3LT = Fn(\u03BBLT, \u03C6LT, \u03B2=1, \u03BBLT0=0.2)", f3(lamLT) + ", curve " + curveLTfe + ", general case", f3(chiLT), "", "Curve " + curveLTfe);
+      }
+      Mb = Math.min(chiMod * Wy * fy, Mc);
+      susceptible = Mb < Mc - 1e-6;
+      line("Mb.Rd = \u03C7 Wpl.y.fy\u2264 Mc.y.Rd", f3(chiMod) + " x " + fT(Wy / 1e3, 1) + " x " + fy + " \u2264 " + f3(Mc / 1e6) + " = [" + methodTag + "]", f3(Mb / 1e6) + " kN.m", "");
+    } else if (isBox || inp.axis === "minor") {
+      Mb = Mc;
+      line("Mb.Rd = Mc.y.Rd", isBox ? "Hollow section \u2014 not susceptible to LTB" : "Minor-axis bending \u2014 LTB not applicable", f3(Mb / 1e6) + " kN.m", "");
+    } else {
+      var Le = inp.KLT * inp.H;
+      var NcrzLT = Math.PI * Math.PI * E_EC3 * Iz / (Le * Le);
+      var Mcr = C1 * NcrzLT * Math.sqrt(Iw / Iz + G_EC3 * It / NcrzLT);
+      lamLT = Math.sqrt(Wy * fy / Mcr);
+      var curveLT = ec3LTBCurve(sec.family, sec.h, sec.b);
+      var xr = chiLT_EC3(lamLT, curveLT);
+      chiLT = xr.chi;
+      kc = Math.min(1, 1 / Math.sqrt(C1));
+      fFac = Math.min(1, 1 - 0.5 * (1 - kc) * (1 - 2 * Math.pow(lamLT - 0.8, 2)));
+      chiMod = Math.min(chiLT / fFac, 1, lamLT > 0.01 ? 1 / (lamLT * lamLT) : 1);
+      Mb = Math.min(chiMod * Wy * fy, Mc);
+      susceptible = Mb < Mc - 1e-6;
+      line("Le = " + fT(inp.KLT, 1) + " L", fT(inp.KLT, 1) + " x " + fT(Lm, 2) + " =", fT(Le / 1000, 3) + " m", "");
+      line("Mcr= Fn(C1,Le,Iz,It,Iw,E)", f3(C1) + ", " + Number(Le / 1000).toFixed(3) + ", " + fT(Iz / 1e4, 1) + ", " + fT(It / 1e4, 3) + ", " + Number(Iw / 1e12).toFixed(5) + ", 210000" + (sec.IwApprox ? "   [Iw approximated]" : ""), f3(Mcr / 1e6) + " kN.m", "");
+      line("\u03BBLT= \u221A W.fy/Mcr", "\u221A " + fT(Wy / 1e3, 1) + " x " + fy + " / " + f3(Mcr / 1e6), f3(lamLT), "");
+      line("\u03B3LT= Fn(\u03BBLT, \u03C6LT, \u03B2, \u03BBLT0)", f3(lamLT) + ", " + f3(xr.phi) + ", 0.750, 0.400", f3(chiLT), "", "Curve " + curveLT);
+      line("\u03B3LT.mod = Fn(\u03B3LT.\u03BBLT,kc,f)", f3(chiLT) + ", " + f3(lamLT) + ", " + f3(kc) + ", " + f3(fFac), f3(chiMod), "", "6.3.2.3");
+      line("Mb.Rd = \u03C7 Wpl.y.fy\u2264 Mc.y.Rd", f3(chiMod) + " x " + fT(Wy / 1e3, 1) + " x " + fy + " \u2264 " + f3(Mc / 1e6) + " =", f3(Mb / 1e6) + " kN.m", "");
+    }
+
+    /* ---- Buckling resistance ---- */
+    block("Buckling Resistance");
+    var UNy = NEd / NbY, UNz = NEd / NbZ;
+    line("UN.y = NEd/(\u03B3y.NRk/\u03B3M1)", fT(NEd / 1000, 3) + " / " + f3(NbY / 1000), f3(UNy), "", OK(UNy <= 1));
+    line("UN.z = NEd/(\u03B3z.NRk/\u03B3M1)", fT(NEd / 1000, 3) + " / " + f3(NbZ / 1000), f3(UNz), "", OK(UNz <= 1));
+    var UMy = MyEd / Mb;
+    var MzRd = Wplz * fy;
+    line("UM.y = My.Ed/(\u03B3LT.M..Rk/\u03B3M1)", fT(MyEd / 1e6, 3) + " / " + f3(Mb / 1e6), f3(UMy), "", OK(UMy <= 1));
+    line("UM.z = Mz.Ed/(Mz.Rk/\u03B3M1)", "0 / " + fT(MzRd / 1e6, 3), "0.000", "", "OK");
+    /* MasterKey: plastic Table B.1/B.2 forms for Class 1/2 I-, H- and box
+       sections; elastic forms for channels (not covered by the plastic
+       provisions) and for Class 3. Both verified against its output. */
+    var elasticK = isChan || semi;
+    var kyy, kzz, kyz, kzy;
+    if (susceptible) line("kzy method", "Mb,Rd < My,Rd, therefore susceptible to LTB, using Table B.2", "", "");
+    if (elasticK) {
+      kyy = Cmy * (1 + Math.min(0.6 * lamYb, 0.6) * UNy);
+      kzz = Cmz * (1 + Math.min(0.6 * lamZb, 0.6) * UNz);
+      kyz = kzz;
+      kzy = susceptible ? 1 - (0.05 * lamZb / Math.max(CmLT - 0.25, 0.05)) * UNz : 0.8 * kyy;
+      line("kyy=Cmy{1+0.6\u03BByU(N.y)}", "", f3(kyy), "");
+      line("kzz=Cmz{1+0.6U(N.z)}", "", f3(kzz), "");
+      line("kyz=kzz", "", f3(kyz), "");
+      line(susceptible ? "kzy= 1- {0.05\u03BBz/(CmLT-0.25)}U(N.z)" : "kzy= 0.8 kyy", "", f3(kzy), "");
+    } else {
+      kyy = Cmy * (1 + Math.min(lamYb - 0.2, 0.8) * UNy);
+      kzz = Cmz * (1 + Math.min(2 * lamZb - 0.6, 1.4) * UNz);
+      kyz = 0.6 * kzz;
+      if (susceptible) kzy = lamZb < 0.4 ? Math.min(0.6 + lamZb, 1 - (0.1 * lamZb / Math.max(CmLT - 0.25, 0.05)) * UNz) : 1 - (0.1 * lamZb / Math.max(CmLT - 0.25, 0.05)) * UNz;
+      else kzy = 0.6 * kyy;
+      line("kyy=Cmy{1+(\u03BBy-0.2)U(N.y)}", "", f3(kyy), "");
+      line("kzz=Cmz{1+" + (2 * lamZb - 0.6 > 1.4 ? "1.4" : "(2\u03BBz-0.6)") + "U(N.z)}", "", f3(kzz), "");
+      line("kyz=0.6 kzz", "", f3(kyz), "");
+      line(susceptible ? "kzy= 1- {0.1\u03BBz/(CmLT-0.25)}U(N.z)" : "kzy= 0.6 kyy", "", f3(kzy), "");
+    }
+    var e661 = UNy + kyy * UMy;
+    var e662 = UNz + kzy * UMy;
+    line("UNy+kyy.UM.y+kyz.UM.z", f3(UNy) + "+" + f3(kyy) + "x" + f3(UMy) + "+" + f3(kyz) + "x0.000", f3(e661), "", OK(e661 <= 1));
+    line("UNz+kzy.UM.y+kzz.UM.z", f3(UNz) + "+" + f3(kzy) + "x" + f3(UMy) + "+" + f3(kzz) + "x0.000", f3(e662), "", OK(e662 <= 1));
+    utils.un_y = UNy; utils.un_z = UNz; utils.um_y = UMy; utils.eq661 = e661; utils.eq662 = e662;
+
+    /* ---- Deflections ---- */
+    if (inp.defl) {
+      var lim1 = inp.H / 360, lim2 = inp.H / 150;
+      block("Deflection Check In-Span - Load Case as run");
+      line("\u03B4 \u2264 Span/360", fT(inp.defl.inspan, 2) + " \u2264 " + inp.H + " / 360", fT(inp.defl.inspan, 2) + " mm", "", OK(inp.defl.inspan <= lim1));
+      block("Deflection Check Lateral Sway - Load Case as run");
+      line("\u03B4 \u2264 Span/150" + (inp.defl.note ? "   [" + inp.defl.note + "]" : ""), fT(inp.defl.sway, 2) + " \u2264 " + inp.H + " / 150", fT(inp.defl.sway, 2) + " mm", "", OK(inp.defl.sway <= lim2));
+      utils.sway = inp.defl.sway / lim2; utils.inspan = inp.defl.inspan / lim1;
+    }
+
+    var names = { local: "Local capacity (6.2.9)", un_y: "Flexural buckling y (6.3.1)", un_z: "Flexural buckling z (6.3.1)", un_t: "Torsional buckling (6.3.1.4)", um_y: "LTB (6.3.2)", eq661: "Interaction eq. 6.61", eq662: "Interaction eq. 6.62", sway: "Lateral sway H/150", inspan: "In-span deflection H/360" };
+    var gk = null, gv = -1;
+    Object.keys(utils).forEach(function (k) { if (utils[k] > gv) { gv = utils[k]; gk = k; } });
+    return { blocks: blocks, utils: utils, governing: { key: gk, name: names[gk], value: gv, pass: gv <= 1 && !cl.slender && !highShear }, slender: cl.slender, highShear: highShear,
+      derived: { Av: Av, Vpl: Vpl / 1000, Mc: Mc / 1e6, Npl: Npl / 1000, n: n, MN: MN != null ? MN / 1e6 : null, localU: localU, NcrY: NcrY / 1000, NcrZ: NcrZ / 1000, lamYb: lamYb, lamZb: lamZb, NbY: NbY / 1000, NbZ: NbZ / 1000, NcrT: NcrT != null ? NcrT / 1000 : null, NcrTF: NcrTF != null ? NcrTF / 1000 : null, NbT: NbT != null ? NbT / 1000 : null, lamT: lamT, C1: C1, CmLT: CmLT, Cmz: Cmz, lamLT: lamLT, chiLT: chiLT, kc: kc, f: fFac, chiMod: chiMod, Mb: Mb / 1e6, UNy: UNy, UNz: UNz, UMy: UMy, kyy: kyy, kzz: kzz, kzy: kzy, e661: e661, e662: e662 } };
+  }
+
+  var ENGINE = { pyTable9: pyTable9, pcAnnexC: pcAnnexC, pbAnnexB: pbAnnexB, mTable26: mTable26, mTable18: mTable18, strutCurves: strutCurves, classifySection: classifySection, designColumn: designColumn, stitchColumn: stitchColumn, PFC_UX: PFC_UX, E_DESIGN: E_DESIGN,
+    designColumnEC3: designColumnEC3, chiEC3: chiEC3, chiLT_EC3: chiLT_EC3, ec3StrutCurves: ec3StrutCurves, ec3LTBCurve: ec3LTBCurve, ec3LTBCurveGeneral: ec3LTBCurveGeneral, c1QuarterPoint: c1QuarterPoint, c1EC3: c1EC3, channelUX: channelUX, cmTableB3: cmTableB3, channelShearCentreY0: channelShearCentreY0, channelIw: channelIw, classifyEC3: classifyEC3 };
   if (typeof module !== "undefined" && module.exports) module.exports = ENGINE;
   if (typeof globalThis !== "undefined") globalThis.BS5950_DESIGN = ENGINE;
 
@@ -3323,12 +3848,15 @@ init();
   if (typeof document === "undefined" || !document.getElementById("modelSvg")) return;
   try {
 
-  var DSTATE = { grade: "S235", Kx: 2.0, Ky: 2.0, KLT: 2.0, cantilever: true };
+  var DSTATE = { code: "BS", grade: "S235", Kx: 2.0, Ky: 2.0, KLT: 2.0, cantilever: true, braceZ: false };
 
   /* styles (additive) */
   var css = document.createElement("style");
   css.textContent = ".dz-wrap{max-width:1080px}.dz-inputs{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-bottom:12px;padding:11px 13px;border:1px solid var(--line);border-radius:9px;background:#f9fbfd}.dz-inputs label{display:grid;gap:3px;font-size:11.5px;font-weight:650;color:#334150}.dz-inputs input,.dz-inputs select{height:30px;width:96px;font-family:var(--mono);font-size:12px;border:1px solid var(--line-2);border-radius:6px;padding:4px 7px}.dz-inputs .dz-chk{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:650;padding-bottom:6px}.dz-gov{border-radius:9px;padding:11px 14px;margin-bottom:12px;font-size:13px;font-weight:700;border:1px solid}.dz-gov.ok{background:#eaf6ef;border-color:#9fd0b3;color:#1d5c3a}.dz-gov.bad{background:#fbeceb;border-color:#e3aaa2;color:#8a1f2a}.dz-gov small{display:block;font-weight:500;margin-top:3px;color:inherit;opacity:.85}.dz-block{margin-bottom:14px}.dz-block h3{margin:0 0 5px;font-size:13px;font-weight:760}.dz-tab{width:100%;border-collapse:collapse;font-size:11.5px}.dz-tab td{border-bottom:1px solid #e6ebf1;padding:5px 8px;vertical-align:top}.dz-tab td.l{width:34%;font-weight:600;color:#334150}.dz-tab td.s{font-family:var(--mono);color:#586472}.dz-tab td.v{font-family:var(--mono);text-align:right;white-space:nowrap;font-weight:600}.dz-tab td.st{width:74px;text-align:right;font-weight:750}.dz-tab td.st.ok{color:var(--green)}.dz-tab td.st.warn{color:var(--red)}.dz-note{font-size:11px;color:var(--muted);margin:8px 0 0;line-height:1.5}.dz-diag{font-family:var(--mono);font-size:11px;color:#475569;background:#f2f5f9;border:1px solid var(--line);border-radius:8px;padding:8px 11px;margin-bottom:12px;line-height:1.6}";
   document.head.appendChild(css);
+  var css2 = document.createElement("style");
+  css2.textContent = "#dzSheet{background:#fff;border:1px solid var(--line);border-radius:6px;padding:18px 26px;font-family:Georgia,'Times New Roman',Times,serif;color:#000}#dzSheet .dz-block{margin-bottom:16px}#dzSheet .dz-block h3{font-family:Georgia,'Times New Roman',Times,serif;font-size:16.5px;font-weight:700;color:#000;margin:0 0 3px;letter-spacing:.01em}#dzSheet .dz-tab{font-family:Georgia,'Times New Roman',Times,serif;font-size:13px}#dzSheet .dz-tab td{border:0;padding:1.5px 10px 1.5px 0;color:#000;font-family:inherit}#dzSheet .dz-tab td.l{width:30%;font-weight:400;padding-left:14px}#dzSheet .dz-tab td.s{color:#000;font-family:inherit}#dzSheet .dz-tab td.v{font-family:inherit;font-weight:400;text-align:right;white-space:nowrap}#dzSheet .dz-tab td.st{width:110px;text-align:right;font-weight:400}#dzSheet .dz-tab td.st b{font-weight:700;color:#000}#dzSheet .dz-tab td.st.warn b{color:#b00000}";
+  document.head.appendChild(css2);
 
   /* tab button + panel, injected without touching existing markup */
   var libBtn = document.querySelector('.tab[data-tab="libraryTab"]');
@@ -3342,11 +3870,13 @@ init();
   panel.id = "designTab"; panel.className = "panel";
   panel.innerHTML = '<div class="dz-wrap">' +
     '<div class="dz-inputs">' +
+    '<label>Design code<select id="dzCode" style="width:150px"><option value="BS">BS 5950-1:2000</option><option value="EC3">EN 1993-1-1</option></select></label>' +
     '<label>Steel grade<select id="dzGrade"><option>S235</option><option>S275</option><option>S355</option></select></label>' +
     '<label>Kx (Table 22)<input id="dzKx" type="number" step="0.05" value="2.0"></label>' +
     '<label>Ky (Table 22)<input id="dzKy" type="number" step="0.05" value="2.0"></label>' +
     '<label>K_LT<input id="dzKlt" type="number" step="0.05" value="2.0"></label>' +
     '<span class="dz-chk"><input id="dzCant" type="checkbox" checked><label for="dzCant">Cantilever (mLT = 1.0, Table 18)</label></span>' +
+    '<span class="dz-chk"><input id="dzBraceZ" type="checkbox"><label for="dzBraceZ">Lateral bracing at arm levels (minor axis)</label></span>' +
     '<button id="dzRun" class="btn btn-primary btn-sm" type="button">Re-check</button>' +
     '</div>' +
     '<div id="dzGov"></div><div id="dzDiag"></div><div id="dzSheet"></div>' +
@@ -3360,13 +3890,15 @@ init();
     btn.classList.add("active"); panel.classList.add("active");
     refresh();
   });
-  ["dzGrade", "dzKx", "dzKy", "dzKlt", "dzCant"].forEach(function (id) {
+  ["dzCode", "dzGrade", "dzKx", "dzKy", "dzKlt", "dzCant", "dzBraceZ"].forEach(function (id) {
     document.getElementById(id).addEventListener("change", function () {
+      DSTATE.code = document.getElementById("dzCode").value;
       DSTATE.grade = document.getElementById("dzGrade").value;
       DSTATE.Kx = Number(document.getElementById("dzKx").value) || 2;
       DSTATE.Ky = Number(document.getElementById("dzKy").value) || 2;
       DSTATE.KLT = Number(document.getElementById("dzKlt").value) || 2;
       DSTATE.cantilever = document.getElementById("dzCant").checked;
+      DSTATE.braceZ = document.getElementById("dzBraceZ").checked;
       refresh();
     });
   });
@@ -3386,13 +3918,32 @@ init();
     else if (sec.groupId === "SHSCF") family = "box-cf";
     else if (sec.groupId === "PFC") {
       family = "channel";
-      var k = PFC_UX[sec.designation];
-      if (k) { u = k.u; x = k.x; dFil = k.d; }
-      else { u = 0.9; x = d.h / tf; dFil = d.h - 2 * tf; uxApprox = true; }
+      var k = PFC_UX[sec.designation] || {};
+      if (k.u != null) { u = k.u; x = k.x; }
+      dFil = k.d != null ? k.d : d.h - 2 * tf;
     } else if (sec.groupId === "UC") family = "H";
     else family = "I";
     if (family === "I" || family === "H") {
       u = raw.buckling_parameter_U; x = raw.torsional_index_X; dFil = raw.depth_between_fillets_d_mm;
+    }
+    /* EC3 extras: warping constant, shear-centre offset, fillet radius */
+    var Iw = null, y0 = 0, rFil = 0, IwApprox = false, y0Approx = false;
+    if (family === "I" || family === "H") {
+      Iw = raw.warping_constant_Iw_dm6 || null;
+      rFil = raw.root_radius_r_mm || 0;
+      if (Iw == null && d.h && d.b && tf) { Iw = (sec.Iz_cm4 * 1e4) * Math.pow(d.h - tf, 2) / 4 / 1e12; IwApprox = true; }
+    } else if (family === "channel") {
+      var kk = PFC_UX[sec.designation] || {};
+      if (kk.Iw_dm6 != null) Iw = kk.Iw_dm6;
+      else { Iw = channelIw(d.h, d.b, tw, tf) / 1e12; IwApprox = true; }
+      if (kk.y0 != null) y0 = kk.y0;
+      else { y0 = channelShearCentreY0(d.h, d.b, tw, tf); y0Approx = true; }
+      rFil = dFil != null ? Math.max((d.h - 2 * tf - dFil) / 2, 0) : 0;
+      if (u == null) {
+        /* Annex B.2.3 channel formulas (exact when Iw is exact) */
+        var ux = channelUX(sec.A_mm2, sec.Wply * 1e3, sec.Iz_cm4 * 1e4, sec.Iy_cm4 * 1e4, Iw * 1e12, sec.IT_cm4 * 1e4);
+        u = ux.u; x = ux.x; uxApprox = IwApprox;
+      }
     }
     var minor = sec.axis === "minor";
     var tgov = Math.max(tf || 0, tw || 0, t || 0);
@@ -3406,7 +3957,13 @@ init();
         rx_cm: minor ? sec.iz : sec.iy, ry_cm: minor ? sec.iy : sec.iz,
         h: d.h, b: d.b, tw: tw, tf: tf, t: t, d_fillets: dFil,
         u: u, x: x, uxApprox: uxApprox, tgov: tgov,
-        A_mm2: sec.A_mm2
+        A_mm2: sec.A_mm2,
+        /* EC3 */
+        Iy_cm4: minor ? sec.Iz_cm4 : sec.Iy_cm4, Iz_cm4: minor ? sec.Iy_cm4 : sec.Iz_cm4,
+        IT_cm4: sec.IT_cm4 || 0, Iw_dm6: Iw || 0, y0: y0, rFillet: rFil,
+        Sz_cm3: minor ? sec.Wply : sec.Wplz,
+        Zz_cm3: minor ? sec.Wely : sec.Welz,
+        IwApprox: IwApprox, y0Approx: y0Approx, mass: sec.mass
       },
       minor: minor
     };
@@ -3436,27 +3993,69 @@ init();
       if (dr && dr.top) { sway = Math.abs(dr.top.halfUx); swayNote = "top junction + \u00BD beam depth @ " + Math.round(dr.top.halfHeight) + " mm"; }
       else { sway = prof.maxAbs; swayNote = "max column sway"; }
 
-      var out = designColumn({
+      /* Effective Ky: when lateral bracing at arm levels is ticked, compute
+         the governing minor-axis buckling length from the arm arrangement.
+         Segments between adjacent bracing points use K=1.0 (restrained both ends).
+         The segment above the top arm is a cantilever from the last brace point
+         (K=2.0) unless the top arm is at the column tip. Base-to-first-arm uses
+         K=0.85 (fixed base to pinned brace) or K=2.0 if the base is pinned.
+         Consistent with MasterSeries Ly input approach (user-controlled restraint
+         spacing) and Tekla's guidance (interaction eqs use full-column Cm/C1). */
+      var kyEff = DSTATE.Ky, braceNote = "";
+      if (DSTATE.braceZ && res.armHeights && res.armHeights.length > 0) {
+        var ah = res.armHeights.slice().sort(function (a, b) { return a - b; });
+        var pts = [0].concat(ah);
+        if (ah[ah.length - 1] < st.H - 1) pts.push(st.H);
+        var maxLe = 0, govSeg = "";
+        for (var bi = 0; bi < pts.length - 1; bi++) {
+          var seg = pts[bi + 1] - pts[bi];
+          var kSeg;
+          if (bi === 0) kSeg = 0.85;                          // fixed base to brace
+          else if (pts[bi + 1] >= st.H - 1) kSeg = 2.0;       // cantilever above top arm
+          else kSeg = 1.0;                                     // brace to brace
+          var le = kSeg * seg;
+          if (le > maxLe) { maxLe = le; govSeg = Math.round(pts[bi]) + "\u2013" + Math.round(pts[bi + 1]) + " mm (K=" + kSeg + ")"; }
+        }
+        kyEff = maxLe / st.H;
+        braceNote = "  \u00B7 minor-axis bracing at arm levels: Ky,eff = " + kyEff.toFixed(3) + " (governing segment " + govSeg + ", Le,z = " + Math.round(maxLe) + " mm)";
+        document.getElementById("dzKy").value = kyEff.toFixed(3);
+        document.getElementById("dzKy").disabled = true;
+      } else {
+        document.getElementById("dzKy").disabled = false;
+      }
+
+      var dinp = {
         grade: DSTATE.grade, py: si.py, H: st.H,
-        Kx: DSTATE.Kx, Ky: DSTATE.Ky, KLT: DSTATE.KLT,
+        combo: "1 UT + " + res.input.gammaG + " D1 + " + res.input.gammaQ + " L1  (RackFrame2D combination as run)",
+        Kx: DSTATE.Kx, Ky: kyEff, KLT: DSTATE.KLT, KT: 1.0,
         cantileverLTB: DSTATE.cantilever, axis: si.sec ? (si.minor ? "minor" : "major") : "major",
         F: st.F, Fv: st.Fv, Mx: st.Mmax,
         M2: st.M2, M3: st.M3, M4: st.M4, M24: st.M24,
         sec: si.sec,
-        defl: { inspan: inspan, sway: sway, note: swayNote }
-      });
+        defl: { inspan: inspan, sway: sway, note: swayNote },
+        /* Optional FE lateral-torsional-buckling hook. Both stay null until an
+           out-of-plane / warping-torsion eigensolver populates them on the
+           result object. Mcr_exact = elastic critical moment for the ACTUAL
+           run BMD (N.mm); C1_exact = effective C1 = Mcr_actual/Mcr_uniform.
+           EC3 uses Mcr_exact (general case) or Mcr_exact+C1_exact (rolled);
+           BS 5950 needs BOTH (to recover the uniform-moment Mcr) or falls back
+           to its analytical u.v.lam estimate. Null -> analytical path (default). */
+        Mcr_exact: (res.Mcr_exact != null ? res.Mcr_exact : null),
+        C1_exact: (res.C1_exact != null ? res.C1_exact : null)
+      };
+      var out = DSTATE.code === "EC3" ? designColumnEC3(dinp) : designColumn(dinp);
 
       /* governing banner */
       var g = out.governing;
       gov.innerHTML = '<div class="dz-gov ' + (g.pass ? "ok" : "bad") + '">' +
         (g.pass ? "PASS" : "FAIL") + " \u2014 governing: " + g.name + " at " + (g.value * 100).toFixed(1) + "% of limit" +
-        "<small>Strength worst case " + (Math.max(out.utils.local || 0, out.utils.simple1 || 0, out.utils.simple2 || 0, out.utils.exact1 || 0, out.utils.exact2 || 0) * 100).toFixed(1) + "% \u00B7 deflection worst case " + (Math.max(out.utils.sway || 0, out.utils.inspan || 0) * 100).toFixed(1) + "%" +
+        "<small>Strength worst case " + (Object.keys(out.utils).reduce(function (m, k) { return (k === "sway" || k === "inspan") ? m : Math.max(m, out.utils[k] || 0); }, 0) * 100).toFixed(1) + "% \u00B7 deflection worst case " + (Math.max(out.utils.sway || 0, out.utils.inspan || 0) * 100).toFixed(1) + "%" +
         (out.slender ? " \u00B7 SLENDER SECTION \u2014 checks not valid" : "") + (out.highShear ? " \u00B7 HIGH SHEAR \u2014 verify" : "") + "</small></div>";
 
       /* diagnostics */
       var sumP = 0; (res.pointLoadMarks || []).forEach(function (m) { sumP += Math.max(m.P, 0); });
       var baseWarn = res.input.leftSupport !== "fixed" ? "  \u26A0 column base is '" + res.input.leftSupport + "' \u2014 the cantilever K factors assume a FIXED base" : "";
-      diag.innerHTML = '<div class="dz-diag">Design forces from analysis \u2014 F = ' + st.F.toFixed(3) + " kN (max compression), Mmax = " + st.Mmax.toFixed(3) + " kN\u00B7m, Fv = " + st.Fv.toFixed(3) + " kN \u00B7 quarter-point |M| = " + st.M2.toFixed(2) + " / " + st.M3.toFixed(2) + " / " + st.M4.toFixed(2) + " (M24 = " + st.M24.toFixed(2) + ") \u00B7 \u03A3 factored point loads = " + (sumP / 1000).toFixed(2) + " kN \u00B7 combination " + res.input.gammaG + "G + " + res.input.gammaQ + "Q as run \u00B7 analysis E = " + res.input.E + ", design E = 205000" + baseWarn + "</div>";
+      diag.innerHTML = '<div class="dz-diag">Design forces from analysis \u2014 F = ' + st.F.toFixed(3) + " kN (max compression), Mmax = " + st.Mmax.toFixed(3) + " kN\u00B7m, Fv = " + st.Fv.toFixed(3) + " kN \u00B7 quarter-point |M| = " + st.M2.toFixed(2) + " / " + st.M3.toFixed(2) + " / " + st.M4.toFixed(2) + " (M24 = " + st.M24.toFixed(2) + ") \u00B7 \u03A3 factored point loads = " + (sumP / 1000).toFixed(2) + " kN \u00B7 combination " + res.input.gammaG + "G + " + res.input.gammaQ + "Q as run \u00B7 analysis E = " + res.input.E + ", design E = " + (DSTATE.code === "EC3" ? "210000 (EN 1993-1-1 cl. 3.2.6)" : "205000 (BS 5950 cl. 3.1.3)") + baseWarn + braceNote + "</div>";
 
       /* the sheet */
       var html = "";
@@ -3480,7 +4079,6 @@ init();
     if (typeof console !== "undefined") console.error("BS5950 design layer failed to attach:", glueErr);
   }
 })();
-
 </script>
 </body>
 </html>
