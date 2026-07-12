@@ -16,6 +16,7 @@
 - `engines/standards/eurocode-mcr-engine.js` - fixed-free 1D Vlasov FE eigenvalue Mcr solver, MasterSeries-style NCCI C1 decomposition, SN003 and P360/SN009 calculations
 - `engines/standards/eurocode-engine.js` - EN 1993-1-1 calculations
 - `engines/standards/design-layer-ui.js` - column-design panel and standard dispatcher
+- `cantilever-designer.html` - complete cantilever beam member-design screen opened from the rack's **Beam design** tab and per-beam **Design** buttons
 
 ## Build one file for Google Sites
 
@@ -25,7 +26,7 @@ Run:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build-single-html.ps1
 ```
 
-The pasteable standalone file is generated at `dist/advance-bs-rack.html`.
+The pasteable standalone file is generated at `dist/advance-bs-rack.html`. The build embeds `cantilever-designer.html` into that file so the complete beam-design report works inside a Google Sites custom embed without a separate hosted file.
 
 `monolith-source-backup.html` is the original single-file version retained for comparison and recovery.
 

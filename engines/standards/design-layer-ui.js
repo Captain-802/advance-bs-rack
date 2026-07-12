@@ -99,7 +99,7 @@
     btn.className = "tab";
     btn.type = "button";
     btn.dataset.tab = "designTab";
-    btn.textContent = "Member design";
+    btn.textContent = "Column design";
     if (libBtn) libBtn.parentNode.insertBefore(btn, libBtn); else strip.appendChild(btn);
 
     var panel = document.createElement("div");

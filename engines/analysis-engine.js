@@ -1753,6 +1753,7 @@ function init() {
   $("libFilter").addEventListener("input", renderLibrary);
 
   document.querySelectorAll(".tab").forEach((btn) => btn.addEventListener("click", () => {
+    if (btn.classList.contains("beam-design-launch")) return;
     document.querySelectorAll(".tab").forEach((b) => b.classList.remove("active"));
     document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
     btn.classList.add("active");

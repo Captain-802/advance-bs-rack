@@ -7,6 +7,11 @@ $outPath = Join-Path $outDir 'advance-bs-rack.html'
 $utf8 = [Text.UTF8Encoding]::new($false)
 $html = [IO.File]::ReadAllText($indexPath, $utf8)
 
+$designerPath = Join-Path $root 'cantilever-designer.html'
+if (-not (Test-Path $designerPath)) { throw "Missing beam designer: $designerPath" }
+$designerBase64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($designerPath))
+$html = $html.Replace('__CANTILEVER_DESIGNER_BASE64__', $designerBase64)
+
 $pattern = '<script src="([^"]+)"></script>'
 $html = [regex]::Replace($html, $pattern, {
   param($match)

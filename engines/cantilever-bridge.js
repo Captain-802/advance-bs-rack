@@ -107,9 +107,36 @@ function computeMemberDesign(slsInput) {
 var _cdLastMember = null;
 var _cdLastRated = null;
 
-/* Open the original Cantilever Beam Designer (full report, original output
-   style) in a new tab, prefilled for the arm at level h, loaded with the
-   governing rated SWL. */
+function bundledCantileverDesignerHtml() {
+  const node = document.getElementById("cantileverDesignerBundle");
+  const b64 = node ? (node.textContent || "").trim() : "";
+  if (!b64 || b64.indexOf("__CANTILEVER_DESIGNER_BASE64__") >= 0) return null;
+  try {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new TextDecoder("utf-8").decode(bytes);
+  } catch (e) {
+    console.error("Unable to decode bundled beam designer", e);
+    return null;
+  }
+}
+
+function closeBeamDesigner() {
+  const shell = document.getElementById("beamDesignerShell");
+  const frame = document.getElementById("beamDesignerFrame");
+  if (shell) shell.hidden = true;
+  document.body.classList.remove("beam-design-open");
+  if (frame) {
+    frame.removeAttribute("srcdoc");
+    frame.src = "about:blank";
+  }
+}
+
+/* Open the complete Cantilever Beam Designer inside the rack app, prefilled
+   for the chosen arm and loaded with the governing rated SWL. The standalone
+   Google Sites build uses the bundled designer; local development falls back
+   to the neighbouring cantilever-designer.html file. */
 function openArmDesign(h) {
   if (!_cdLastMember || !_cdLastMember.perArm) return;
   const rec = _cdLastMember.perArm.find((r) => Math.abs(r.h - h) < 1e-6);
@@ -120,8 +147,29 @@ function openArmDesign(h) {
   const load = (_cdLastRated != null && isFinite(_cdLastRated)) ? _cdLastRated
              : (isFinite(rec.capacity) ? rec.capacity : 1);
   const p = Object.assign({}, rec.params, { P: Math.round(load * 1000) / 1000, label: rec.label });
-  const url = "cantilever-designer.html#arm=" + encodeURIComponent(JSON.stringify(p));
-  window.open(url, "_blank");
+  const hash = "#arm=" + encodeURIComponent(JSON.stringify(p));
+  const shell = document.getElementById("beamDesignerShell");
+  const frame = document.getElementById("beamDesignerFrame");
+  const label = document.getElementById("beamDesignerLabel");
+  if (!shell || !frame) return;
+
+  if (label) label.textContent = rec.label + " @ " + fmt(rec.h, 0) + " mm";
+  const bundled = bundledCantileverDesignerHtml();
+  if (bundled) {
+    const preset = "<script>location.hash=" + JSON.stringify(hash) + ";<\/script>";
+    frame.removeAttribute("src");
+    frame.srcdoc = bundled.replace(/<head([^>]*)>/i, function (match) { return match + preset; });
+  } else {
+    frame.removeAttribute("srcdoc");
+    frame.src = "cantilever-designer.html" + hash;
+  }
+  shell.hidden = false;
+  document.body.classList.add("beam-design-open");
+}
+
+function openGoverningBeamDesign() {
+  if (_cdLastMember && _cdLastMember.govArm) openArmDesign(_cdLastMember.govArm.h);
+  else alert("Analyze the rack first so a governing cantilever beam can be selected.");
 }
 
 /* Render the governing rated-SWL card: min( serviceability , member design ). */
@@ -198,3 +246,11 @@ function renderRatedSWL(swlResult, slsInput) {
     return null;
   }
 }
+
+const beamDesignBtn = document.getElementById("beamDesignBtn");
+if (beamDesignBtn) beamDesignBtn.addEventListener("click", openGoverningBeamDesign);
+const closeBeamDesignBtn = document.getElementById("closeBeamDesigner");
+if (closeBeamDesignBtn) closeBeamDesignBtn.addEventListener("click", closeBeamDesigner);
+document.addEventListener("keydown", function (event) {
+  if (event.key === "Escape") closeBeamDesigner();
+});
