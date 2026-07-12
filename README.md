@@ -38,6 +38,15 @@ node .\tests\analysis-boundary.test.js
 node .\tests\eurocode-regression.test.js
 ```
 
+## Load combinations
+
+The main Loads panel contains two explicit combinations:
+
+- **ULS** factors drive member forces, reactions, force diagrams, Frame3DD export, and column design.
+- **SLS** factors drive sway, node displacement, deflection KPIs, the deformed shape, and serviceability checks.
+
+Member self-weight is always generated automatically as the permanent action `G`. A `G` factor of `1.0` applies the full characteristic member self-weight; `0.0` removes it for that combination. Entered point loads are the variable action `Q`.
+
 The column-design panel offers two Eurocode Mcr routes for doubly symmetric open sections:
 
 - `FE eigenvalue - fixed/free` uses the signed analysis moment diagram in a separate lateral-torsional eigenproblem. The root restrains lateral displacement, lateral rotation and twist; root warping is selectable. No tip degree of freedom is restrained.

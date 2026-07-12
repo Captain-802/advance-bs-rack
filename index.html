@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RackFrame2D — Structural Analysis</title>
+  <title>RackFrame2D | Structural Rack Analysis</title>
   <style>
     :root{
       --bg:#edf0f4; --rail:#f6f8fb; --panel:#ffffff;
@@ -187,6 +187,9 @@
     .secdot{display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; vertical-align:middle; box-shadow:0 0 0 1px rgba(0,0,0,.08);}
     .msummary b{color:var(--accent-ink); font-family:var(--mono); font-weight:600;}
     .armcard{border:1px solid var(--line); border-radius:9px; padding:5px 10px 6px; margin-bottom:5px; background:#f9fbfd;}
+    .armcard.is-ignored{border-color:#e0a59e; border-left:4px solid #c0392b; background:#fff6f5;}
+    .armcard.is-ignored .armcard-title .dotmark{background:#c0392b;}
+    .arm-warn{margin-top:6px; padding:5px 8px; border-radius:6px; background:#fdeceb; color:#8d2b25; font-size:10px; font-weight:650; line-height:1.35;}
     .armcard-head{display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;}
     .armcard-title{font-size:11.5px; font-weight:760; color:var(--ink); display:flex; align-items:center; gap:7px;}
     .armcard-title .dotmark{width:9px; height:9px; border-radius:2px; background:var(--accent);}
@@ -294,6 +297,178 @@
 
     #addArm{width:100%; margin-top:1px; padding:6px; font-weight:700;}
       .armcard-title .armh{font-family:var(--mono); font-weight:500; font-size:9.5px; color:var(--faint); letter-spacing:0;}
+
+    /* ================================================================
+       RACKFRAME 2D — workspace redesign
+       ================================================================ */
+    :root{
+      --bg:#e8eef4; --rail:#f5f8fb; --panel:#ffffff;
+      --ink:#102033; --muted:#526276; --faint:#8190a3;
+      --line:#dbe4ec; --line-2:#bdcad7;
+      --accent:#147d8d; --accent-ink:#0b5d6a; --accent-tint:#e4f4f5;
+      --teal:#0e8f82; --red:#c43b31; --amber:#ad6d09; --green:#168168;
+      --shadow:0 10px 28px rgba(20,40,61,.07),0 1px 2px rgba(20,40,61,.05);
+    }
+    body{grid-template-rows:72px 1fr 34px;background:var(--bg);}
+
+    .topbar{
+      display:grid;grid-template-columns:minmax(235px,280px) minmax(370px,1fr) auto;
+      gap:24px;padding:0 16px 0 20px;
+      background:linear-gradient(115deg,#081724,#0d2436 58%,#10344a);
+      border-bottom:1px solid rgba(255,255,255,.08);
+      box-shadow:0 8px 24px rgba(8,23,36,.18);
+    }
+    .brand{gap:12px;}
+    .brandmark{width:38px;height:38px;padding:2px;border:1px solid rgba(255,255,255,.16);border-radius:10px;background:rgba(255,255,255,.05);}
+    .brand-name{font-size:16px;font-weight:850;letter-spacing:1.5px;}
+    .brand-name span{color:#55d7c7;margin-left:2px;}
+    .brand-sub{margin-top:5px;color:#91a7ba;font-size:10px;letter-spacing:.15px;}
+    .top-context{display:grid;grid-template-columns:repeat(3,minmax(105px,1fr));height:42px;align-items:center;border-left:1px solid rgba(255,255,255,.11);}
+    .top-context>div{min-width:0;padding:1px 18px;border-right:1px solid rgba(255,255,255,.11);}
+    .top-context span{display:block;margin-bottom:3px;color:#7891a7;font-size:8.5px;font-weight:800;letter-spacing:1px;text-transform:uppercase;}
+    .top-context strong{display:block;overflow:hidden;color:#eaf2f7;font-size:10.5px;font-weight:650;text-overflow:ellipsis;white-space:nowrap;}
+    .toolbar{gap:7px;flex-wrap:nowrap;}
+    .chip{display:inline-flex;align-items:center;gap:7px;padding:5px 9px;color:#9fb2c3;border-color:rgba(255,255,255,.14);background:rgba(255,255,255,.035);font-size:9.5px;text-transform:uppercase;letter-spacing:.55px;}
+    .chip i{width:7px;height:7px;border-radius:50%;background:#55d7c7;box-shadow:0 0 0 4px rgba(85,215,199,.11);}
+    .top-action{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:39px;padding:8px 12px;border-color:rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#dce7ef;}
+    .top-action:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.28);}
+    .top-action svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+    .top-action.btn-primary{padding-left:15px;padding-right:15px;color:#082431;background:#55d7c7;border-color:#55d7c7;box-shadow:0 5px 14px rgba(85,215,199,.15);}
+    .top-action.btn-primary:hover{color:#061e29;background:#7ee3d7;border-color:#7ee3d7;}
+
+    .layout{grid-template-columns:438px minmax(0,1fr);}
+    .rail{padding:14px 14px 20px;background:var(--rail);border-right:1px solid #cad7e2;scrollbar-width:thin;scrollbar-color:#aebdca transparent;}
+    .rail-intro{display:flex;align-items:flex-start;justify-content:space-between;gap:15px;padding:3px 3px 8px;}
+    .rail-kicker{display:block;margin-bottom:3px;color:var(--accent);font-size:8.5px;font-weight:850;letter-spacing:1.2px;text-transform:uppercase;}
+    .rail-intro h1{margin:0;color:var(--ink);font-size:21px;line-height:1.15;letter-spacing:-.4px;}
+    .rail-intro p{max-width:270px;margin:5px 0 0;color:var(--muted);font-size:10.5px;line-height:1.4;}
+    .rail-toggle{margin-top:3px;padding:3px 0;border:0;background:transparent;color:var(--accent);font-size:10px;font-weight:750;cursor:pointer;}
+    .rail-toggle:hover{text-decoration:underline;}
+    .rail-progress{display:flex;justify-content:space-between;align-items:center;margin:0 2px 12px;padding:7px 10px;color:var(--muted);background:#eaf0f5;border:1px solid #d6e0e9;border-radius:8px;font-size:9.5px;}
+    .rail-progress span{display:flex;align-items:center;gap:6px;}
+    .rail-progress b{color:var(--ink);font-family:var(--mono);}
+    .rail-progress i{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px rgba(22,129,104,.10);}
+
+    .card{margin-bottom:9px;border-color:#d7e1e9;border-radius:11px;box-shadow:0 3px 12px rgba(19,42,63,.035);overflow:hidden;}
+    .card-head{min-height:47px;padding:8px 12px;background:#fff;}
+    .card-toggle:hover{background:#f7fafc;}
+    .card-head .htext .eyebrow{color:#8092a4;font-size:8.5px;letter-spacing:.13em;}
+    .card-head h2{font-size:13px;font-weight:780;}
+    .card-ico{width:29px;height:29px;color:var(--accent-ink);background:var(--accent-tint);border:1px solid #d6ecee;}
+    .card-body{padding:10px 12px 11px;background:#fff;}
+    .rail .card:focus-within{border-color:#8cc4cb;box-shadow:0 0 0 3px rgba(20,125,141,.09),0 5px 16px rgba(19,42,63,.06);}
+    input,select{height:34px;border-color:#c7d3de;border-radius:7px;background:#fbfdfe;transition:border-color .15s,box-shadow .15s,background .15s;}
+    input:hover,select:hover{border-color:#9fb0c0;background:#fff;}
+    input:focus,select:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(20,125,141,.10);background:#fff;}
+    .field{color:#314357;}
+    .armcard{padding:9px 10px 8px;margin-bottom:8px;border-color:#d9e3eb;border-radius:9px;background:#f8fbfd;}
+    .armcard-head{margin-bottom:8px;}
+    .combo-input-grid{display:grid;gap:9px;}
+    .combo-input-set{padding:9px 10px 10px;border:1px solid #dce5ec;border-radius:9px;background:#f8fbfd;}
+    .combo-input-head{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
+    .combo-input-head strong{display:inline-flex;align-items:center;justify-content:center;min-width:38px;height:22px;border-radius:6px;font-family:var(--mono);font-size:10px;letter-spacing:.45px;}
+    .combo-input-head span{color:var(--muted);font-size:9.5px;font-weight:650;}
+    .uls-set{border-left:3px solid var(--accent);}.uls-set .combo-input-head strong{color:var(--accent-ink);background:var(--accent-tint);}
+    .sls-set{border-left:3px solid #7c8da0;}.sls-set .combo-input-head strong{color:#42566b;background:#e8edf2;}
+    .combo-input-set .field-grid-2{margin:0;}.combo-input-set .field{margin:0;}
+    .combo-help{margin:8px 2px 0;color:var(--muted);font-size:9.5px;line-height:1.45;}
+    .combo-help b{color:var(--ink);font-weight:750;}
+    .btn{border-radius:8px;transition:background .15s,border-color .15s,transform .15s,box-shadow .15s;}
+    .btn:hover{transform:translateY(-1px);box-shadow:0 4px 10px rgba(20,40,61,.09);}
+    .btn-ghost{border-style:solid;color:var(--accent-ink);border-color:#b9d6d9;background:#f7fcfc;}
+    .btn-ghost:hover{background:var(--accent-tint);border-color:#8fc4ca;}
+
+    .canvas{background:#f7fafc;}
+    .tabstrip{gap:5px;padding:9px 12px;background:#e8eef4;border-bottom:1px solid #ccd8e2;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;}
+    .tabstrip::-webkit-scrollbar{display:none;}
+    .tab{min-height:36px;padding:8px 13px;border:1px solid transparent;border-radius:8px;color:#5f7081;font-size:11.5px;white-space:nowrap;}
+    .tab:hover{color:var(--ink);background:rgba(255,255,255,.55);}
+    .tab.active{margin:0;color:var(--accent-ink);background:#fff;border-color:#cad7e2;box-shadow:0 3px 10px rgba(20,40,61,.07),inset 0 -2px 0 var(--accent);}
+    .tabwrap{padding:14px 16px 18px;background:#fff;}
+    .kpis{grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:12px;}
+    .kpi{position:relative;min-width:0;padding:11px 11px 10px;border-color:#dce5ed;border-radius:10px;background:#fff;box-shadow:0 3px 12px rgba(20,40,61,.045);overflow:hidden;}
+    .kpi::before{content:"";position:absolute;top:0;left:0;right:0;height:3px;background:#b8c8d5;}
+    .kpi span{min-height:25px;color:#7a8a9b;font-size:8.5px;line-height:1.35;letter-spacing:.075em;}
+    .kpi strong{margin-top:5px;color:#13283d;font-size:14px;font-weight:680;line-height:1.25;}
+    .kpi-hot{border-color:#ecd5a3;background:#fffbf4;}
+    .kpi-hot::before{background:#d39827;}
+    .kpi-hot span{color:#936417;}.kpi-hot strong{color:#7f5410;}
+    .combobar{margin:0 0 11px;padding:8px 10px;background:#f3f7fa;border:1px solid #dce5ec;border-radius:8px;}
+    .combobar .ctag{color:var(--accent-ink);background:#fff;border-color:#b8d7da;}
+    .swl-card{margin:0 0 11px;padding:12px 13px 10px;border:1px solid #a8d4d1;border-left:4px solid #0e8f82;border-radius:10px;background:linear-gradient(135deg,#f1fbfa,#fbfefd);box-shadow:0 5px 16px rgba(20,125,141,.07);}
+    .swl-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:9px;}
+    .swl-kicker{display:block;margin-bottom:2px;color:#16766f;font-size:8.5px;font-weight:850;letter-spacing:1px;text-transform:uppercase;}
+    .swl-head h3{margin:0;color:#123547;font-size:15px;line-height:1.1;letter-spacing:-.15px;}
+    .swl-badge{flex:none;padding:5px 8px;border:1px solid #b3d8d4;border-radius:6px;background:#fff;color:#16766f;font-family:var(--mono);font-size:9px;font-weight:750;}
+    .swl-grid{display:grid;grid-template-columns:1.3fr 1fr 1.25fr;gap:8px;}
+    .swl-grid>div{min-width:0;padding:7px 9px;border:1px solid #d5e8e6;border-radius:7px;background:rgba(255,255,255,.72);}
+    .swl-grid span{display:block;min-height:22px;color:#5a7580;font-size:8.5px;font-weight:750;line-height:1.3;text-transform:uppercase;letter-spacing:.04em;}
+    .swl-grid strong{display:block;margin-top:3px;overflow:hidden;color:#123547;font-family:var(--mono);font-size:14px;font-weight:750;text-overflow:ellipsis;white-space:nowrap;}
+    .swl-note{margin:8px 1px 0;color:#53717b;font-size:9.5px;line-height:1.4;}
+    .swl-pos{display:grid;gap:3px;margin:0 0 9px;font-size:8.5px;font-weight:850;color:#16766f;text-transform:uppercase;letter-spacing:.05em;}
+    .swl-pos .u{font-family:var(--mono);font-weight:600;color:#5a7580;text-transform:none;letter-spacing:0;font-size:9px;}
+    .swl-pos input{height:30px;padding:5px 9px;font-size:12px;font-family:var(--mono);border:1px solid #b3d8d4;border-radius:6px;background:#fff;color:#123547;}
+    .swl-pos input:focus{outline:none;border-color:#0e8f82;box-shadow:0 0 0 2px rgba(14,143,130,.15);}
+    .swl-card.is-error{border-color:#e8b6b0;border-left-color:var(--red);background:#fff6f5;}.swl-card.is-error .swl-kicker,.swl-card.is-error .swl-grid strong{color:#8d2b25;}
+    .gov-card{margin-top:11px;border-color:#b7c3e6;border-left-color:#3a5bbf;background:linear-gradient(135deg,#f3f6fe,#fbfcff);box-shadow:0 5px 16px rgba(44,62,143,.07);}
+    .gov-card .swl-kicker{color:#2c3e8f;}
+    .gov-card .swl-badge{border-color:#b9c6e6;color:#2c3e8f;}
+    .gov-card .swl-grid>div:last-child{border-color:#9fb0e0;background:#eef2fe;}
+    .gov-card .swl-grid>div:last-child strong{color:#233876;}
+    .gov-controls{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:9px;}
+    .gov-controls label{display:grid;gap:3px;font-size:8.5px;font-weight:850;color:#2c3e8f;text-transform:uppercase;letter-spacing:.05em;}
+    .gov-controls select{height:30px;padding:4px 8px;font-size:11.5px;border:1px solid #b9c6e6;border-radius:6px;background:#fff;color:#1e2a44;}
+    .gov-controls select:focus{outline:none;border-color:#3a5bbf;box-shadow:0 0 0 2px rgba(58,91,191,.15);}
+    @media (max-width:520px){ .gov-controls{grid-template-columns:1fr;} }
+    .gov-details{margin:9px 0 2px;width:100%;font-weight:700;color:#2c3e8f;border-color:#b9c6e6;}
+    .gov-details:hover{background:#eef2fe;}
+    .armcard-btns{display:flex;gap:6px;align-items:center;}
+    .rowdesign{font-size:9.5px;font-weight:700;color:#2c3e8f;background:#eef2fe;border:1px solid #c2cef0;border-radius:5px;padding:2px 7px;cursor:pointer;white-space:nowrap;}
+    .rowdesign:hover{background:#e0e8fc;}
+    .modeltools{min-height:38px;margin-bottom:10px;padding:5px 7px;background:#f8fafc;border:1px solid #e0e8ef;border-radius:8px;}
+    .stage{border-color:#d4dee7;border-radius:11px;background:
+      repeating-linear-gradient(0deg,transparent,transparent 23px,rgba(91,120,145,.055) 23px,rgba(91,120,145,.055) 24px),
+      repeating-linear-gradient(90deg,transparent,transparent 23px,rgba(91,120,145,.055) 23px,rgba(91,120,145,.055) 24px),#fbfdfe;
+      box-shadow:inset 0 0 0 1px rgba(255,255,255,.8),0 8px 24px rgba(20,40,61,.05);
+    }
+    .stage-model{height:calc(100vh - 323px);min-height:430px;}
+    .stage-dg{height:calc(100vh - 245px);min-height:460px;}
+    .seclegend{padding:7px 9px;background:#f8fafc;border:1px solid #e1e8ef;border-radius:8px;}
+    .tablewrap{border-color:#d7e1e9;border-radius:9px;}
+    table.data th{background:#eef3f7;color:#415367;}
+    table.data tbody tr:hover{background:#f1f7f8;}
+
+    .statusbar{padding:0 16px;background:#0c1d2b;color:#9eb0bf;border-top:1px solid rgba(255,255,255,.08);font-size:10.5px;}
+    .status-right b{color:#eef5f8;}.dot{background:#55d7c7;box-shadow:0 0 0 3px rgba(85,215,199,.13);}
+
+    @media(max-width:1180px){
+      .topbar{grid-template-columns:235px 1fr auto;gap:12px;}
+      .top-context>div:last-child{display:none;}.top-context{grid-template-columns:1fr 1fr;}
+      .kpis{grid-template-columns:repeat(3,1fr);}
+      .stage-model{height:540px;}
+    }
+    @media(max-width:1060px){
+      body{height:auto;min-height:100dvh;display:block;overflow:auto;}
+      .topbar{position:sticky;top:0;z-index:20;min-height:66px;grid-template-columns:1fr auto;padding:9px 12px;}
+      .top-context{display:none;}.chip{display:none;}
+      .layout{display:block;}.rail{overflow:visible;border-right:0;border-bottom:1px solid var(--line);}
+      .canvas{min-height:720px;}.statusbar{min-height:34px;}
+      .stage-model{height:520px;}
+    }
+    @media(max-width:620px){
+      .topbar{display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px;padding:9px 10px;}
+      .brand-sub{display:none;}.brandmark{width:34px;height:34px;}.brand-name{font-size:13px;}
+      .toolbar{gap:5px;}.top-action{width:38px;height:38px;min-height:38px;padding:0;font-size:0;}.top-action svg{width:17px;height:17px;}
+      .rail{padding:12px 10px 16px;}.rail-intro h1{font-size:19px;}.rail-intro p{max-width:230px;}
+      .rail-progress{margin-bottom:9px;}.card{margin-bottom:8px;}
+      .combo-input-set .field-grid-2{grid-template-columns:1fr 1fr;gap:8px;}
+      .tabstrip{padding:8px;}.tab{padding:8px 11px;}.tabwrap{padding:10px;}
+      .kpis{grid-template-columns:1fr 1fr;}.kpi strong{font-size:13px;}
+      .swl-grid{grid-template-columns:1fr 1fr;}.swl-grid>div:first-child{grid-column:span 2;}
+      .stage-model,.stage-dg{height:390px;min-height:390px;}
+      .modeltools{align-items:center;}.rng{width:100%;order:5;}.rng input[type=range]{flex:1;}
+      .statusbar{align-items:flex-start;flex-direction:column;padding:7px 10px;gap:5px;}.status-right{font-size:9.5px;}
+    }
   </style>
 </head>
 <body>
@@ -306,19 +481,41 @@
         <circle cx="7" cy="25" r="2.1" fill="#d2e2f6"/><circle cx="25" cy="25" r="2.1" fill="#d2e2f6"/>
       </svg>
       <div>
-        <div class="brand-name">RackFrame<span>2D</span></div>
-        <div class="brand-sub">Elastic plane-frame analysis · Blue Book EC3 (UK NA) section library</div>
+        <div class="brand-name">RACKFRAME<span>2D</span></div>
+        <div class="brand-sub">Structural rack analysis &middot; Blue Book section library</div>
       </div>
     </div>
+    <div class="top-context" aria-label="Workspace context">
+      <div><span>Workspace</span><strong>Rack verification</strong></div>
+      <div><span>Standards</span><strong>BS 5950 &middot; EC3 UK NA</strong></div>
+      <div><span>Analysis</span><strong>First-order elastic 2D</strong></div>
+    </div>
     <div class="toolbar">
-      <span class="chip">Solver N·mm · results kN, kN·m, mm</span>
-      <button id="resetBtn" class="btn">Reset</button>
-      <button id="runBtn" class="btn btn-primary">Analyze</button>
+      <span class="chip"><i></i> Live solver</span>
+      <button id="resetBtn" class="btn top-action" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4m0 0h4M4 4l3.2 3.2A7 7 0 1 1 5 14"></path></svg>
+        Reset
+      </button>
+      <button id="runBtn" class="btn btn-primary top-action" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7 5 5-5 5"></path><path d="M5 4h14v16H5z"></path></svg>
+        Analyze frame
+      </button>
     </div>
   </header>
 
   <main class="layout">
     <aside class="rail">
+      <div class="rail-intro">
+        <div>
+          <span class="rail-kicker">Model configuration</span>
+          <h1>Frame inputs</h1>
+          <p>Define members, actions and restraints. The solver updates automatically.</p>
+        </div>
+        <button id="collapseAllCards" class="rail-toggle" type="button" aria-expanded="true">Collapse all</button>
+      </div>
+      <div class="rail-progress" aria-label="Model workflow">
+        <span><b>5</b> input groups</span><span><i></i> Auto-analysis on</span>
+      </div>
       <section class="card">
         <div class="card-head"><span class="eyebrow">01 · Column</span><h2>Column &amp; material</h2></div>
         <div class="card-body">
@@ -349,11 +546,23 @@
       <section class="card">
         <div class="card-head"><span class="eyebrow">04 · Loads</span><h2>Load combination</h2></div>
         <div class="card-body">
-          <label class="check"><input id="includeSW" type="checkbox" checked> Include member self-weight</label>
-          <div class="field-grid-2">
-            <label class="field">Self-weight &gamma;<sub>G</sub><span class="u">&times;</span><input id="gammaG" type="number" value="1.35" step="0.05"></label>
-            <label class="field">Imposed &gamma;<sub>Q</sub><span class="u">&times;</span><input id="gammaQ" type="number" value="1.50" step="0.05"></label>
+          <div class="combo-input-grid">
+            <div class="combo-input-set uls-set">
+              <div class="combo-input-head"><strong>ULS</strong><span>Member forces &amp; column design</span></div>
+              <div class="field-grid-2">
+                <label class="field">Self-weight G<span class="u">&times;</span><input id="ulsGammaG" type="number" value="1.35" min="0" step="0.05"></label>
+                <label class="field">Imposed Q<span class="u">&times;</span><input id="ulsGammaQ" type="number" value="1.50" min="0" step="0.05"></label>
+              </div>
+            </div>
+            <div class="combo-input-set sls-set">
+              <div class="combo-input-head"><strong>SLS</strong><span>Deflections &amp; sway</span></div>
+              <div class="field-grid-2">
+                <label class="field">Self-weight G<span class="u">&times;</span><input id="slsGammaG" type="number" value="1.00" min="0" step="0.05"></label>
+                <label class="field">Imposed Q<span class="u">&times;</span><input id="slsGammaQ" type="number" value="1.00" min="0" step="0.05"></label>
+              </div>
+            </div>
           </div>
+          <p class="combo-help">G multiplies the automatic characteristic member self-weight: <b>1.0 = full self-weight</b>. Q multiplies the entered point loads.</p>
         </div>
       </section>
 
@@ -363,8 +572,8 @@
           <div class="field-grid-2">
             <label class="field">Column base
               <select id="leftSupport">
-                <option value="pin">Pinned</option>
-                <option value="fixed" selected>Fixed</option>
+                <option value="pin" selected>Pinned</option>
+                <option value="fixed">Fixed</option>
                 <option value="roller-y">Vertical roller</option>
                 <option value="free">Free</option>
               </select>
@@ -380,10 +589,10 @@
           </div>
           <label class="field">Base-tie end release
             <select id="bottomRelease">
-              <option value="both" selected>Pinned both ends</option>
+              <option value="both">Pinned both ends</option>
               <option value="left">Pinned at column</option>
               <option value="right">Pinned at far end</option>
-              <option value="none">Fixed both ends</option>
+              <option value="none" selected>Fixed both ends</option>
             </select>
           </label>
           <div class="field-grid-2">
@@ -406,14 +615,58 @@
       <div class="tabwrap">
         <div id="modelTab" class="panel active">
           <div class="kpis">
-            <div class="kpi"><span>Max column sway</span><strong id="mSway">–</strong></div>
-            <div class="kpi kpi-hot"><span>Top beam junction Ux</span><strong id="mTopJ">–</strong></div>
-            <div class="kpi kpi-hot"><span>Ux @ junction + &#189; depth</span><strong id="mHalf">–</strong></div>
-            <div class="kpi"><span>Max arm tip defl.</span><strong id="mTip">–</strong></div>
-            <div class="kpi"><span>Max moment</span><strong id="mMoment">–</strong></div>
-            <div class="kpi"><span>Max shear</span><strong id="mShear">–</strong></div>
+            <div class="kpi"><span>Max column sway &middot; SLS</span><strong id="mSway">–</strong></div>
+            <div class="kpi kpi-hot"><span>Top beam junction Ux &middot; SLS</span><strong id="mTopJ">–</strong></div>
+            <div class="kpi kpi-hot"><span>Ux @ junction + &#189; depth &middot; SLS</span><strong id="mHalf">–</strong></div>
+            <div class="kpi"><span>Max arm tip defl. &middot; SLS</span><strong id="mTip">–</strong></div>
+            <div class="kpi"><span>Max moment &middot; ULS</span><strong id="mMoment">–</strong></div>
+            <div class="kpi"><span>Max shear &middot; ULS</span><strong id="mShear">–</strong></div>
           </div>
           <div id="comboNote" class="combobar"></div>
+          <section id="swlCard" class="swl-card" aria-live="polite">
+            <div class="swl-head">
+              <div><span class="swl-kicker">Serviceability capacity</span><h3>&Delta; SWL / arm</h3></div>
+              <span class="swl-badge">SLS &middot; sway h/150</span>
+            </div>
+            <label class="swl-pos" for="swlPos">Load position on each arm (from root)
+              <span class="u">mm &mdash; leave blank to use each arm&rsquo;s tip</span>
+              <input id="swlPos" type="number" min="0" step="10" inputmode="numeric" placeholder="tip">
+            </label>
+            <div class="swl-grid">
+              <div><span>Allowable common point load</span><strong id="deltaSwl">&ndash;</strong></div>
+              <div><span>Deflection limit</span><strong id="swlLimit">&ndash;</strong></div>
+              <div><span>Check point</span><strong id="swlLocation">&ndash;</strong></div>
+            </div>
+            <p id="swlNote" class="swl-note">Largest equal point load on every cantilever arm at the chosen position before the sway at the check point reaches (check-point height)/150. SLS deflection only.</p>
+          </section>
+          <section id="govCard" class="swl-card gov-card" aria-live="polite">
+            <div class="swl-head">
+              <div><span class="swl-kicker">Rated capacity</span><h3>Governing SWL / arm</h3></div>
+              <span class="swl-badge">min(SLS, member)</span>
+            </div>
+            <div class="gov-controls">
+              <label for="swlFlange">Compression flange
+                <select id="swlFlange">
+                  <option value="ltb">Unrestrained (LTB governs)</option>
+                  <option value="full">Restrained (LTB skipped)</option>
+                </select>
+              </label>
+              <label for="swlLoadHeight">Load height
+                <select id="swlLoadHeight">
+                  <option value="top">Top flange (destabilising)</option>
+                  <option value="shear">Shear centre</option>
+                  <option value="bottom">Bottom flange (stabilising)</option>
+                </select>
+              </label>
+            </div>
+            <div class="swl-grid">
+              <div><span>Serviceability &middot; sway h/150</span><strong id="govSls">&ndash;</strong></div>
+              <div><span>Member design &middot; weakest arm</span><strong id="govMember">&ndash;</strong></div>
+              <div><span>Governing rated SWL</span><strong id="govRated">&ndash;</strong></div>
+            </div>
+            <button id="govDetails" class="btn btn-ghost btn-sm gov-details" type="button" style="display:none">View weakest-arm design details &#8599;</button>
+            <p id="govNote" class="swl-note">Each arm is checked as a built-in cantilever (bending, shear, LTB, tip deflection) to the design-layer code. The rated SWL is the lower of rack serviceability and member design. Use the buttons to open the full member-design report for any beam in a new tab.</p>
+          </section>
           <div class="panel-bar modeltools">
             <button id="animBtn" class="btn btn-ghost btn-sm" type="button">&#9654; Animate</button>
             <label class="rng">Exaggerate <input id="defMult" type="range" min="0" max="3" step="0.05" value="1"><span id="defMultVal" class="mono-dim">&#215;1.0</span></label>
@@ -424,7 +677,7 @@
           </div>
           <div class="stage stage-model"><svg id="modelSvg" viewBox="0 0 1000 620" role="img" aria-label="Frame model"></svg><div id="modelTip" class="modeltip" hidden></div></div>
           <div id="sectionLegend" class="seclegend"></div>
-          <p class="note">Members are coloured by section — same colour means the same section. Deformed shape in a lighter tint of each member’s colour, red load, amber sway probe. Scroll to zoom, drag to pan, hover a member for its section and peak forces, click to inspect it in Diagrams.</p>
+          <p class="note">Members are coloured by section — same colour means the same section. The deformed shape and amber sway probe use the <b>SLS</b> combination; red loads and member peak forces use <b>ULS</b>. Scroll to zoom, drag to pan, hover a member for its section and peak forces, click to inspect it in Diagrams.</p>
         </div>
 
         <div id="diagramTab" class="panel">
@@ -433,30 +686,30 @@
             <button class="subtab" data-sub="sfdPanel" type="button">Shear force</button>
           </div>
           <div id="bmdPanel" class="subpanel active">
-            <div class="dgbar"><span class="dgtitle">Bending moment</span><span id="bmdMax" class="dgmax"></span></div>
+            <div class="dgbar"><span class="dgtitle">Bending moment &middot; ULS</span><span id="bmdMax" class="dgmax"></span></div>
             <div class="stage stage-dg"><svg id="sysM" viewBox="0 0 1000 620" role="img" aria-label="Bending moment diagram"></svg></div>
             <p class="note">Whole-frame bending moment, auto-scaled to fit. Plotted on the tension face (sagging positive). Each member's largest moment is marked at its controlling section; the governing value is boxed. Values in kN·m.</p>
           </div>
           <div id="sfdPanel" class="subpanel">
-            <div class="dgbar"><span class="dgtitle">Shear force</span><span id="sfdMax" class="dgmax"></span></div>
+            <div class="dgbar"><span class="dgtitle">Shear force &middot; ULS</span><span id="sfdMax" class="dgmax"></span></div>
             <div class="stage stage-dg"><svg id="sysV" viewBox="0 0 1000 620" role="img" aria-label="Shear force diagram"></svg></div>
             <p class="note">Whole-frame shear force, auto-scaled to fit. Each member's largest shear is marked at its controlling section; the governing value is boxed. Values in kN.</p>
           </div>
         </div>
 
         <div id="tablesTab" class="panel">
-          <h3 class="res-h">Lateral deflection (Ux)</h3>
+          <h3 class="res-h">Lateral deflection (Ux) &middot; SLS</h3>
           <div id="uxHeadline" class="ux-headline"></div>
           <div id="uxBeamTable" class="tablewrap"></div>
           <p class="note" id="uxNote"></p>
-          <h3 class="res-h mt">Node displacements</h3>
+          <h3 class="res-h mt">Node displacements &middot; SLS</h3>
           <div id="dispTable" class="tablewrap"></div>
-          <h3 class="res-h mt">Support reactions</h3>
+          <h3 class="res-h mt">Support reactions &middot; ULS</h3>
           <div id="reactTable" class="tablewrap"></div>
-          <h3 class="res-h mt">Member end forces</h3>
+          <h3 class="res-h mt">Member end forces &middot; ULS</h3>
           <div id="forceTable" class="tablewrap"></div>
           <p class="note">End forces in local member axes. Positive Mi, Mj act counter-clockwise on the member end (matrix convention); the Diagrams tab shows the same moments sagging-positive. Forces in kN, moments in kN·m.</p>
-          <h3 class="res-h mt">Column sway profile</h3>
+          <h3 class="res-h mt">Column sway profile &middot; SLS</h3>
           <div id="colProfileNote" class="note" style="margin-bottom:8px;"></div>
           <div id="colProfileTable" class="tablewrap"></div>
         </div>
@@ -473,10 +726,10 @@
 
         <div id="exportTab" class="panel">
           <div class="panel-bar export-actions">
-            <button id="download3dd" class="btn btn-sm" type="button">Download .3dd</button>
-            <button id="downloadJson" class="btn btn-sm" type="button">Download JSON</button>
+            <button id="download3dd" class="btn btn-sm" type="button">Download ULS .3dd</button>
+            <button id="downloadJson" class="btn btn-sm" type="button">Download ULS + SLS JSON</button>
             <button id="copy3dd" class="btn btn-sm" type="button">Copy deck</button>
-            <span class="mono-dim">Deck in N, mm</span>
+            <span class="mono-dim">Frame3DD deck uses ULS &middot; N, mm</span>
           </div>
           <textarea id="frame3ddText" spellcheck="false"></textarea>
           <p class="note">Repository: <a href="https://github.com/pslack/frame3dd" target="_blank" rel="noreferrer">pslack/frame3dd</a>. Member end releases and distributed loads are handled as noted in the deck header.</p>
@@ -494,20 +747,23 @@
       <span><b id="sbCounts">–</b></span>
     </div>
   </footer>
-  <script src="engines/sections/ub-section-data.js"></script>
-  <script src="engines/sections/uc-section-data.js"></script>
-  <script src="engines/sections/rhs-section-data.js"></script>
-  <script src="engines/sections/shs-section-data.js"></script>
-  <script src="engines/sections/pfc-section-data.js"></script>
-  <script src="engines/sections/shs-cold-formed-section-data.js"></script>
-  <script src="engines/analysis-engine.js"></script>
+  <script src="engines/sections/ub-section-data.js?v=2"></script>
+  <script src="engines/sections/uc-section-data.js?v=2"></script>
+  <script src="engines/sections/rhs-section-data.js?v=2"></script>
+  <script src="engines/sections/shs-section-data.js?v=2"></script>
+  <script src="engines/sections/pfc-section-data.js?v=2"></script>
+  <script src="engines/sections/shs-cold-formed-section-data.js?v=2"></script>
+  <script src="engines/cantilever-design-engine.js?v=1"></script>
+  <script src="engines/standards/swl-capacity-engine.js?v=1"></script>
+  <script src="engines/cantilever-bridge.js?v=1"></script>
+  <script src="engines/analysis-engine.js?v=5"></script>
 
 
 <!-- BS 5950 column design layer - inlined for Google Sites -->
-<script src="engines/standards/bs5950-engine.js"></script>
-  <script src="engines/standards/eurocode-load-cases.js"></script>
-  <script src="engines/standards/eurocode-mcr-engine.js"></script>
-  <script src="engines/standards/eurocode-engine.js"></script>
-  <script src="engines/standards/design-layer-ui.js"></script>
+<script src="engines/standards/bs5950-engine.js?v=2"></script>
+  <script src="engines/standards/eurocode-load-cases.js?v=2"></script>
+  <script src="engines/standards/eurocode-mcr-engine.js?v=2"></script>
+  <script src="engines/standards/eurocode-engine.js?v=2"></script>
+  <script src="engines/standards/design-layer-ui.js?v=3"></script>
 </body>
 </html>

@@ -33,7 +33,6 @@ const model = {
   baseUDL: 0,
   baseP: 0,
   baseLoads: [],
-  includeSW: false,
   gammaG: 1,
   gammaQ: 1,
   leftSupport: "fixed",
@@ -73,5 +72,26 @@ const eigen = MCR.mcrEigenFixedFree({
 });
 assert.equal(eigen.topFree, true);
 assert.ok(eigen.Mcr > 0 && eigen.C1 > 0, "fixed-free FE Mcr and C1 must be available from the solved frame diagram");
+
+const swl = FE.calculateDeltaSWL(model);
+assert.equal(swl.ok, true, "Delta SWL should be available for a cantilever model");
+assert.equal(swl.limit, model.columnHeight / 150, "Delta SWL must use the H/150 limit");
+assert.ok(swl.allowable > 0, "Delta SWL must return a positive characteristic point-load capacity");
+
+// Permanent member self-weight is always controlled by gammaG: 1.0 is the
+// full characteristic value and 0.0 removes it without a separate switch.
+const selfWeightModel = {
+  ...model,
+  colSection: { ...model.colSection, selfW: 0.5 },
+  baseSection: { ...model.baseSection, selfW: 0.25 },
+  arms: model.arms.map((arm) => ({ ...arm, selfW: 0.2, loads: [], P: 0 })),
+  gammaQ: 0
+};
+const noG = FE.buildFrame({ ...selfWeightModel, gammaG: 0 });
+const fullG = FE.buildFrame({ ...selfWeightModel, gammaG: 1 });
+assert.ok(noG.F.every((value) => Math.abs(value) < 1e-12), "G=0 must remove nodal self-weight");
+assert.ok(noG.elements.every((element) => Math.abs(element.qLocalY) < 1e-12), "G=0 must remove distributed self-weight");
+assert.ok(fullG.F.some((value) => value < 0), "G=1 must apply full column self-weight");
+assert.ok(fullG.elements.some((element) => element.type !== "column" && element.qLocalY < 0), "G=1 must apply full beam self-weight");
 
 console.log("Fixed-free column boundary checks passed.");

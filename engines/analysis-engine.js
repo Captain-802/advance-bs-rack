@@ -9,6 +9,7 @@
 const DOF = ["Ux", "Uy", "Rz"];
 const $ = (id) => document.getElementById(id);
 let lastResult = null;
+let lastSlsResult = null;
 let lastDefl = null;
 let systemForce = "M";
 const ANIM = { on: false, phase: 1, raf: 0, t0: 0 };
@@ -238,9 +239,10 @@ function readModelFromUI() {
   if (arms.length === 0) throw new Error("Add at least one cantilever arm with a height between 0 and the column height.");
   const maxReach = Math.max(baseLen, ...arms.map((a) => a.len));
 
-  const includeSW = $("includeSW") ? $("includeSW").checked : true;
-  const gammaG = $("gammaG") ? (Number($("gammaG").value) || 0) : 1.35;
-  const gammaQ = $("gammaQ") ? (Number($("gammaQ").value) || 0) : 1.5;
+  const ulsGammaG = $("ulsGammaG") ? (Number($("ulsGammaG").value) || 0) : 1.35;
+  const ulsGammaQ = $("ulsGammaQ") ? (Number($("ulsGammaQ").value) || 0) : 1.5;
+  const slsGammaG = $("slsGammaG") ? (Number($("slsGammaG").value) || 0) : 1.0;
+  const slsGammaQ = $("slsGammaQ") ? (Number($("slsGammaQ").value) || 0) : 1.0;
   return {
     columnHeight, baseLen, maxReach, E,
     colSection: { A_mm2: colSec.A_mm2, I_mm4: colSec.I_mm4, label: colSec.short + " " + colSec.designation, secH: colSec.dims ? colSec.dims.h : 0, secB: colSec.dims ? colSec.dims.b : 0, selfW: colSec.mass ? colSec.mass * 9.80665 / 1000 : 0 },
@@ -248,7 +250,11 @@ function readModelFromUI() {
     arms,
     baseUDL: 0, baseP: 0,
     baseLoads: [],
-    includeSW, gammaG, gammaQ,
+    gammaG: ulsGammaG, gammaQ: ulsGammaQ,
+    combinations: {
+      uls: { gammaG: ulsGammaG, gammaQ: ulsGammaQ, label: "ULS" },
+      sls: { gammaG: slsGammaG, gammaQ: slsGammaQ, label: "SLS" }
+    },
     leftSupport: $("leftSupport").value, rightSupport: $("rightSupport").value,
     bottomRelease: $("bottomRelease").value, defScale: numberValue("defScale")
   };
@@ -269,7 +275,7 @@ function buildFrame(input) {
   const elements = [];
   const F = Array(nodes.length * 3).fill(0);
   const marks = [];
-  const gQ = input.gammaQ, swF = (input.includeSW ? input.gammaG : 0);
+  const gQ = input.gammaQ, swF = input.gammaG;
   let selfWeightN = 0;   // unfactored total member self-weight (N), for display
 
   for (let i = 0; i < levels.length - 1; i++) {
@@ -439,7 +445,7 @@ function memberDisplacementAt(el, t) {
   const t2 = t * t, t3 = t2 * t;
   const N1 = 1 - 3 * t2 + 2 * t3, N2 = L * (t - 2 * t2 + t3), N3 = 3 * t2 - 2 * t3, N4 = L * (-t2 + t3);
   let v = N1 * v1 + N2 * th1 + N3 * v2 + N4 * th2;
-  const q = el.qLocalY || 0;
+  const q = el.deflectionQLocalY != null ? el.deflectionQLocalY : (el.qLocalY || 0);
   if (q !== 0) { const x = t * L; v += q * x * x * (L - x) * (L - x) / (24 * el.E * el.I); }
   return { dx: el.c * u - el.s * v, dy: el.s * u + el.c * v };
 }
@@ -511,18 +517,127 @@ function deflectionReport(result) {
   return { beams, top };
 }
 
+function swlLoadPattern(input, pointLoadKN) {
+  const arms = input.arms.map((arm) => {
+    const source = arm.loads && arm.loads.length ? arm.loads[0] : null;
+    const position = source && Number.isFinite(Number(source.a)) ? Number(source.a) : arm.len;
+    return { ...arm, P: 0, loads: pointLoadKN > 0 ? [{ a: position, P: pointLoadKN * 1000 }] : [] };
+  });
+  return { ...input, arms, gammaQ: pointLoadKN > 0 ? 1 : 0, activeCombination: "SWL probe" };
+}
+
+function calculateDeltaSWL(slsInput) {
+  const H = Number(slsInput.columnHeight) || 0;
+  const limit = H / 150;
+  const arms = slsInput.arms || [];
+  if (!(H > 0) || !arms.length) return { ok: false, reason: "Add at least one cantilever arm to calculate Delta SWL." };
+
+  try {
+    const baseInput = swlLoadPattern(slsInput, 0);
+    baseInput.gammaG = Number(slsInput.gammaG) || 0;
+    const unitInput = swlLoadPattern(slsInput, 1);
+    unitInput.gammaG = Number(slsInput.gammaG) || 0;
+    const baseResult = analyze(buildFrame(baseInput));
+    const unitResult = analyze(buildFrame(unitInput));
+    const baseDef = deflectionReport(baseResult);
+    const unitDef = deflectionReport(unitResult);
+    if (!baseDef.top || !unitDef.top) return { ok: false, reason: "The top cantilever arm is required for the H/150 check." };
+
+    const baseSway = baseDef.top.halfUx;
+    const unitSway = unitDef.top.halfUx;
+    const influencePerArm = Math.abs(unitSway - baseSway);
+    const remaining = limit - Math.abs(baseSway);
+    const qFactor = Number(slsInput.gammaQ) || 0;
+    const allowable = qFactor > 1e-12 && influencePerArm > 1e-12
+      ? Math.max(0, remaining / (qFactor * influencePerArm))
+      : Infinity;
+    const firstPosition = arms[0].loads && arms[0].loads.length ? Number(arms[0].loads[0].a) : arms[0].len;
+    const samePosition = arms.every((arm) => {
+      const source = arm.loads && arm.loads.length ? arm.loads[0] : null;
+      const position = source && Number.isFinite(Number(source.a)) ? Number(source.a) : arm.len;
+      return Math.abs(position - firstPosition) < 1e-6;
+    });
+    return {
+      ok: true,
+      allowable,
+      limit,
+      H,
+      checkHeight: unitDef.top.halfHeight,
+      baselineSway: Math.abs(baseSway),
+      influencePerArm,
+      armCount: arms.length,
+      loadPosition: samePosition ? firstPosition : null,
+      qFactor
+    };
+  } catch (error) {
+    return { ok: false, reason: "Delta SWL unavailable: " + (error && error.message ? error.message : error) };
+  }
+}
+
+function renderDeltaSWL(swl) {
+  const card = $("swlCard");
+  if (!card) return;
+  card.classList.toggle("is-error", !swl || !swl.ok);
+  if (!swl || !swl.ok) {
+    $("deltaSwl").textContent = "–";
+    $("swlLimit").textContent = "–";
+    $("swlLocation").textContent = "–";
+    $("swlNote").textContent = swl && swl.reason ? swl.reason : "Delta SWL unavailable.";
+    return;
+  }
+  $("deltaSwl").textContent = Number.isFinite(swl.allowable) ? fmt(swl.allowable, 2) + " kN / arm" : "No finite limit";
+  $("swlLimit").textContent = fmt(swl.limit, 2) + " mm (H/150)";
+  $("swlLocation").textContent = fmt(swl.checkHeight, 0) + " mm above base";
+  const position = swl.loadPosition == null ? "each arm's entered position" : fmt(swl.loadPosition, 0) + " mm from each arm root";
+  $("swlNote").textContent = "Equal characteristic point load on " + swl.armCount + " arm(s) at " + position + ". Self-weight is included at the SLS G factor; this is a deflection-only indication and does not replace ULS strength, connection or stability checks.";
+}
+
 /* ---------------- Render ---------------- */
-function render(result) {
+function displayResultFor(ulsResult, slsResult) {
+  const slsById = new Map(slsResult.elements.map((el) => [el.id, el]));
+  const elements = ulsResult.elements.map((el) => {
+    const slsEl = slsById.get(el.id) || el;
+    return { ...el, dGlobal: slsEl.dGlobal, dLocal: slsEl.dLocal, deflectionQLocalY: slsEl.qLocalY || 0 };
+  });
+  return {
+    ...ulsResult,
+    U: slsResult.U,
+    elements,
+    notes: [...new Set([...(ulsResult.notes || []), ...(slsResult.notes || [])])],
+    summary: {
+      maxSway: slsResult.summary.maxSway,
+      maxTip: slsResult.summary.maxTip,
+      maxV: ulsResult.summary.maxV,
+      maxM: ulsResult.summary.maxM
+    },
+    caseBasis: { forces: "ULS", deflections: "SLS" }
+  };
+}
+
+function render(ulsResult, slsResult) {
+  const result = displayResultFor(ulsResult, slsResult);
   lastResult = result;
+  lastSlsResult = slsResult;
   hideError();
-  const maxV_kN = result.summary.maxV * N_TO_KN, maxM_kNm = result.summary.maxM * NMM_TO_KNM;
-  $("mSway").innerHTML = kpi(result.summary.maxSway, "mm");
-  $("mTip").innerHTML = kpi(result.summary.maxTip, "mm");
+  const maxV_kN = ulsResult.summary.maxV * N_TO_KN, maxM_kNm = ulsResult.summary.maxM * NMM_TO_KNM;
+  $("mSway").innerHTML = kpi(slsResult.summary.maxSway, "mm");
+  $("mTip").innerHTML = kpi(slsResult.summary.maxTip, "mm");
   $("mShear").innerHTML = kpi(maxV_kN, "kN");
   $("mMoment").innerHTML = kpi(maxM_kNm, "kN\u00B7m");
-  const dr = deflectionReport(result);
+  const dr = deflectionReport(slsResult);
   lastDefl = dr;
-  try { window.lastResult = result; window.lastDefl = dr; } catch (e) {}
+  // Serviceability SWL capacity: driven by the separate SWL capacity engine
+  // (sway limit = check-point height / 150, all arms, common load position).
+  // Falls back to the original H/150 Delta SWL check if that engine is absent.
+  if (typeof computeSwlCapacity === "function" && typeof renderSwlCapacity === "function") {
+    const swlRes = computeSwlCapacity(slsResult.input);
+    renderSwlCapacity(swlRes);
+    // Governing rated SWL = min( serviceability , per-arm member design capacity ).
+    if (typeof renderRatedSWL === "function") renderRatedSWL(swlRes, slsResult.input);
+  } else {
+    renderDeltaSWL(calculateDeltaSWL(slsResult.input));
+  }
+  try { window.lastResult = ulsResult; window.lastSlsResult = slsResult; window.lastDefl = dr; } catch (e) {}
   if (dr.top) {
     $("mTopJ").innerHTML = kpi(dr.top.junctionUx, "mm @ " + fmt(dr.top.h, 0));
     $("mHalf").innerHTML = kpi(dr.top.halfUx, "mm @ " + fmt(dr.top.halfHeight, 0) + (dr.top.extrapolated ? " ext" : ""));
@@ -532,26 +647,27 @@ function render(result) {
 
   const warn = result.notes.length > 0;
   $("statusDot").className = "dot" + (warn ? " warn" : "");
-  $("statusText").textContent = warn ? result.notes[0] : "Analysis complete \u00B7 " + result.nodes.length + " nodes, " + result.elements.length + " members";
+  $("statusText").textContent = warn ? result.notes[0] : "ULS + SLS complete \u00B7 " + result.nodes.length + " nodes, " + result.elements.length + " members";
   if ($("comboNote")) {
-    const swkN = (result.selfWeightN || 0) / 1000, gG = result.input.gammaG, gQ = result.input.gammaQ, inc = result.input.includeSW;
+    const swkN = (ulsResult.selfWeightN || 0) / 1000;
+    const uG = ulsResult.input.gammaG, uQ = ulsResult.input.gammaQ;
+    const sG = slsResult.input.gammaG, sQ = slsResult.input.gammaQ;
     $("comboNote").innerHTML =
-      '<span class="ctag">' + fmt(gG, 2) + " G + " + fmt(gQ, 2) + ' Q</span>' +
+      '<span class="ctag">ULS &middot; ' + fmt(uG, 2) + " G + " + fmt(uQ, 2) + ' Q</span>' +
+      '<span class="ctag">SLS &middot; ' + fmt(sG, 2) + " G + " + fmt(sQ, 2) + ' Q</span>' +
       '<span class="ctag">column ' + result.input.leftSupport + '-free · top unrestrained</span>' +
-      (inc
-        ? '<span class="csw">self-weight ' + fmt(swkN, 2) + " kN \u00b7 factored " + fmt(swkN * gG, 2) + " kN downward</span>"
-        : '<span class="csw">self-weight excluded</span>');
+      '<span class="csw">self-weight G<sub>k</sub> ' + fmt(swkN, 2) + " kN \u00b7 ULS " + fmt(swkN * uG, 2) + " kN \u00b7 SLS " + fmt(swkN * sG, 2) + " kN</span>";
   }
-  $("sbSway").textContent = fmt(result.summary.maxSway) + " mm";
+  $("sbSway").textContent = fmt(slsResult.summary.maxSway) + " mm SLS";
   $("sbMoment").textContent = fmt(maxM_kNm) + " kN\u00B7m";
   $("sbShear").textContent = fmt(maxV_kN) + " kN";
   $("sbCounts").textContent = result.nodes.length + "N / " + result.elements.length + "E";
 
   renderModelSvg(result);
-  renderTables(result);
-  renderSystemDiagram(result, "M", "sysM", 620, "bmdMax");
-  renderSystemDiagram(result, "V", "sysV", 620, "sfdMax");
-  $("frame3ddText").value = result.frame3dd;
+  renderTables(ulsResult, slsResult);
+  renderSystemDiagram(ulsResult, "M", "sysM", 620, "bmdMax");
+  renderSystemDiagram(ulsResult, "V", "sysV", 620, "sfdMax");
+  $("frame3ddText").value = ulsResult.frame3dd;
 }
 
 function renderModelSvg(result) {
@@ -708,8 +824,9 @@ function supportSymbol(svg, x, y, type) {
   if (type === "roller-y") { circle(svg, x - 11, y + 50, 4, "none", color); circle(svg, x + 11, y + 50, 4, "none", color); }
 }
 
-function renderTables(result) {
-  const dr = lastDefl || deflectionReport(result);
+function renderTables(result, slsResult) {
+  slsResult = slsResult || result;
+  const dr = deflectionReport(slsResult);
 
   /* ----- Headline lateral deflection (Ux) ----- */
   if (dr.top) {
@@ -751,11 +868,11 @@ function renderTables(result) {
   const topJ = result.colNodeAt.get(ch);
   if (topJ && !role.has(topJ)) role.set(topJ, "Column top");
   const topJunctionId = dr.top ? dr.top.junctionId : null;
-  const dispRows = result.nodes.map((node) => ({
+  const dispRows = slsResult.nodes.map((node) => ({
     node: node.id + " " + node.label,
     loc: (node.id === topJunctionId ? "\u2605 " : "") + (role.get(node.id) || (node.x === 0 ? "Column" : "mid-beam")),
     x: node.x, y: node.y,
-    Ux: result.U[dofIndex(node.id, 0)], Uy: result.U[dofIndex(node.id, 1)], Rz: result.U[dofIndex(node.id, 2)],
+    Ux: slsResult.U[dofIndex(node.id, 0)], Uy: slsResult.U[dofIndex(node.id, 1)], Rz: slsResult.U[dofIndex(node.id, 2)],
     _top: node.id === topJunctionId
   }));
   table($("dispTable"),
@@ -777,9 +894,9 @@ function renderTables(result) {
   }));
   table($("forceTable"), [["member", "Member"], ["Ni", "Ni (kN)"], ["Vi", "Vi (kN)"], ["Mi", "Mi (kN\u00B7m)"], ["Nj", "Nj (kN)"], ["Vj", "Vj (kN)"], ["Mj", "Mj (kN\u00B7m)"]], forceRows);
 
-  const prof = columnProfile(result, 12);
+  const prof = columnProfile(slsResult, 12);
   table($("colProfileTable"), [["y", "Height (mm)"], ["Ux", "Sway Ux (mm)"], ["Uy", "Axial Uy (mm)"]], prof.rows);
-  $("colProfileNote").textContent = "Lateral sway up the column. Max |Ux| = " + fmt(prof.maxAbs) + " mm at " + fmt(prof.maxAt, 0) + " mm.";
+  $("colProfileNote").textContent = "SLS lateral sway up the column. Max |Ux| = " + fmt(prof.maxAbs) + " mm at " + fmt(prof.maxAt, 0) + " mm.";
 }
 
 function table(container, cols, rows, digits, rowClass) {
@@ -1170,11 +1287,29 @@ function setupCollapsibles() {
     const icon = document.createElement("span"); icon.className = "card-ico"; icon.innerHTML = CARD_ICONS[i] || CARD_ICONS[0];
     const chev = document.createElement("span"); chev.className = "chev"; chev.setAttribute("aria-hidden", "true");
     head.replaceChildren(icon, htext, chev);
-    const toggle = () => card.classList.toggle("collapsed");
+    const toggle = () => {
+      card.classList.toggle("collapsed");
+      head.setAttribute("aria-expanded", String(!card.classList.contains("collapsed")));
+    };
     head.addEventListener("click", toggle);
-    head.setAttribute("role", "button"); head.tabIndex = 0;
+    head.setAttribute("role", "button"); head.setAttribute("aria-expanded", "true"); head.tabIndex = 0;
     head.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
   });
+  const allToggle = $("collapseAllCards");
+  if (allToggle && !allToggle.dataset.wired) {
+    allToggle.dataset.wired = "1";
+    allToggle.addEventListener("click", () => {
+      const cards = Array.from(document.querySelectorAll(".rail .card"));
+      const collapse = cards.some((card) => !card.classList.contains("collapsed"));
+      cards.forEach((card) => {
+        card.classList.toggle("collapsed", collapse);
+        const head = card.querySelector(".card-head");
+        if (head) head.setAttribute("aria-expanded", String(!collapse));
+      });
+      allToggle.textContent = collapse ? "Expand all" : "Collapse all";
+      allToggle.setAttribute("aria-expanded", String(!collapse));
+    });
+  }
 }
 function numField(label, unit, value, step, onChange) {
   const lab = document.createElement("label");
@@ -1220,22 +1355,53 @@ function renderArms() {
   const list = $("armsList");
   list.replaceChildren();
   ARMS.sort((a, b) => (Number(a.h) || 0) - (Number(b.h) || 0));   // bottom-up: lowest arm first
+  // Mirror readModelFromUI's filtering so we can flag any beam that will be
+  // dropped from the analysis (above the column top, non-positive, or a
+  // duplicate level). ARMS is already sorted in place, so this order matches.
+  const colEl = $("columnHeight");
+  const H = colEl ? (Number(colEl.value) || 0) : 0;
+  const seenHeights = new Set();
   ARMS.forEach((arm, idx) => {
     if (arm.len == null) arm.len = 2400;
     if (arm.pos == null) arm.pos = arm.len;
-    const card = document.createElement("div"); card.className = "armcard";
+    const h = Number(arm.h);
+    const hKey = Number.isFinite(h) ? Math.round(h * 1e8) / 1e8 : NaN;
+    let ignore = null;
+    if (!Number.isFinite(h) || h <= 0) {
+      ignore = "Level must be above the base (0 mm) \u2014 this beam is not analysed.";
+    } else if (H > 0 && h > H) {
+      ignore = "Level " + fmt(h, 0) + " mm is above the column top (" + fmt(H, 0) + " mm) \u2014 this beam is not analysed. Raise the column height or lower this level.";
+    } else if (seenHeights.has(hKey)) {
+      ignore = "Another beam is already at " + fmt(h, 0) + " mm \u2014 only one beam per level is analysed.";
+    }
+    if (ignore == null && Number.isFinite(hKey)) seenHeights.add(hKey);
+
+    const card = document.createElement("div"); card.className = "armcard" + (ignore ? " is-ignored" : "");
     const head = document.createElement("div"); head.className = "armcard-head";
     const title = document.createElement("div"); title.className = "armcard-title";
     title.innerHTML = '<span class="dotmark"></span>Beam ' + (idx + 2);
     const del = document.createElement("button"); del.className = "rowdel"; del.type = "button"; del.textContent = "\u00D7"; del.title = "Remove beam";
     del.addEventListener("click", () => { ARMS.splice(idx, 1); renderArms(); run(); });
-    head.append(title, del); card.appendChild(head);
+    const btns = document.createElement("div"); btns.className = "armcard-btns";
+    if (!ignore) {
+      const dgn = document.createElement("button"); dgn.className = "rowdesign"; dgn.type = "button";
+      dgn.textContent = "Design \u2197"; dgn.title = "Open the full member-design report for this beam in a new tab";
+      dgn.addEventListener("click", () => { if (typeof openArmDesign === "function") openArmDesign(Number(arm.h)); });
+      btns.appendChild(dgn);
+    }
+    btns.appendChild(del);
+    head.append(title, btns); card.appendChild(head);
     const fields = document.createElement("div"); fields.className = "arm-fields";
     fields.appendChild(numField("Level", "mm", arm.h, 50, (v) => { arm.h = v; renderArms(); run(); }));
     fields.appendChild(numField("Length", "mm", arm.len, 50, (v) => { arm.len = v; renderArms(); run(); }));
     fields.appendChild(numField("Point P", "kN", arm.P, 0.5, (v) => { arm.P = v; run(); }));
     fields.appendChild(numField("Load pos.", "mm", arm.pos, 50, (v) => { arm.pos = v; run(); }));
     card.appendChild(fields);
+    if (ignore) {
+      const warn = document.createElement("div"); warn.className = "arm-warn";
+      warn.textContent = "\u26A0 " + ignore;
+      card.appendChild(warn);
+    }
     const picker = document.createElement("div");
     card.appendChild(picker);
     list.appendChild(card);
@@ -1410,9 +1576,13 @@ function pickDefault(gid, role) {
 function run() {
   try {
     const input = readModelFromUI();
-    const frame = buildFrame(input);
-    const result = analyze(frame);
-    render(result);
+    const uls = input.combinations.uls;
+    const sls = input.combinations.sls;
+    const ulsInput = { ...input, gammaG: uls.gammaG, gammaQ: uls.gammaQ, activeCombination: "ULS" };
+    const slsInput = { ...input, gammaG: sls.gammaG, gammaQ: sls.gammaQ, activeCombination: "SLS" };
+    const ulsResult = analyze(buildFrame(ulsInput));
+    const slsResult = analyze(buildFrame(slsInput));
+    render(ulsResult, slsResult);
   } catch (err) {
     showError(err.message);
   }
@@ -1436,9 +1606,12 @@ function initDefaults() {
 }
 function resetDefaults() {
   $("columnHeight").value = 3600; $("baseLen").value = 2400; $("E").value = 210000;
-  $("leftSupport").value = "fixed"; $("rightSupport").value = "pin"; $("bottomRelease").value = "both";
+  $("leftSupport").value = "pin"; $("rightSupport").value = "pin"; $("bottomRelease").value = "none";
   $("defScale").value = 0; $("colQueryY").value = 3600;
-  if ($("includeSW")) $("includeSW").checked = true; if ($("gammaG")) $("gammaG").value = "1.35"; if ($("gammaQ")) $("gammaQ").value = "1.50";
+  if ($("ulsGammaG")) $("ulsGammaG").value = "1.35";
+  if ($("ulsGammaQ")) $("ulsGammaQ").value = "1.50";
+  if ($("slsGammaG")) $("slsGammaG").value = "1.00";
+  if ($("slsGammaQ")) $("slsGammaQ").value = "1.00";
   initDefaults();
   renderColumnSection(); renderBaseSection(); renderArms(); renderBaseLoads();
   run();
@@ -1544,7 +1717,23 @@ function init() {
   setupCollapsibles();
   enhanceStaticSteppers();
 
-  ["columnHeight", "baseLen", "E", "leftSupport", "rightSupport", "bottomRelease", "defScale", "colQueryY", "baseUDL", "baseP", "gammaG", "gammaQ", "includeSW"].forEach((id) => { const el = $(id); if (el) el.addEventListener("change", run); });
+  ["columnHeight", "baseLen", "E", "leftSupport", "rightSupport", "bottomRelease", "defScale", "colQueryY", "baseUDL", "baseP"].forEach((id) => { const el = $(id); if (el) el.addEventListener("change", run); });
+  if ($("swlPos")) $("swlPos").addEventListener("input", run);
+  // Member-design controls (compression-flange restraint, load height) and the
+  // design-layer code/grade feed the governing rated-SWL card.
+  ["swlFlange", "swlLoadHeight"].forEach((id) => { const el = $(id); if (el) el.addEventListener("change", run); });
+  // dzCode / dzGrade are created later by the design layer, so listen via delegation
+  // (a direct listener here would miss them). Refresh the governing card on change.
+  document.addEventListener("change", (e) => {
+    const t = e.target;
+    if (t && (t.id === "dzCode" || t.id === "dzGrade")) { try { run(); } catch (err) {} }
+  });
+  // The design layer initialises after this script, so re-run once everything is
+  // loaded to refresh the governing rated-SWL card with the real code/grade.
+  if (typeof window !== "undefined") window.addEventListener("load", () => { try { run(); } catch (e) {} });
+  // Column height affects which beams are in range, so refresh the arm flags too.
+  if ($("columnHeight")) $("columnHeight").addEventListener("change", renderArms);
+  ["ulsGammaG", "ulsGammaQ", "slsGammaG", "slsGammaQ"].forEach((id) => { const el = $(id); if (el) el.addEventListener("input", run); });
 
   $("addArm").addEventListener("click", () => {
     const last = ARMS.length ? ARMS[ARMS.length - 1].h : 0;
@@ -1585,7 +1774,15 @@ function init() {
   }));
   const msSel = $("memberSelect"); if (msSel) msSel.addEventListener("change", () => lastResult && renderDiagram(lastResult));
   $("download3dd").addEventListener("click", () => lastResult && downloadText("rackframe2d.3dd", lastResult.frame3dd));
-  $("downloadJson").addEventListener("click", () => lastResult && downloadText("rackframe2d-results.json", JSON.stringify(lastResult, (k, v) => (k === "K" || k === "kLocal" || k === "fLocal" || k === "T" || k === "condensed") ? undefined : v, 2)));
+  $("downloadJson").addEventListener("click", () => {
+    if (!lastResult) return;
+    const payload = {
+      basis: { memberForcesAndDesign: "ULS", deflectionsAndSway: "SLS" },
+      uls: (typeof window !== "undefined" && window.lastResult) ? window.lastResult : lastResult,
+      sls: (typeof window !== "undefined" && window.lastSlsResult) ? window.lastSlsResult : lastSlsResult
+    };
+    downloadText("rackframe2d-results.json", JSON.stringify(payload, (k, v) => (k === "K" || k === "kLocal" || k === "fLocal" || k === "T" || k === "condensed") ? undefined : v, 2));
+  });
   $("copy3dd").addEventListener("click", async () => { if (lastResult && navigator.clipboard) await navigator.clipboard.writeText(lastResult.frame3dd); });
   wireCanvas();
   if ($("animBtn")) $("animBtn").addEventListener("click", toggleAnim);
@@ -1609,7 +1806,8 @@ globalThis.RACK_ANALYSIS_ENGINE = {
   diagramValue,
   supportRestraints,
   frameLocalStiffness,
-  condenseReleases
+  condenseReleases,
+  calculateDeltaSWL
 };
 
 if (typeof document !== "undefined") init();

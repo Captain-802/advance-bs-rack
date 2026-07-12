@@ -18,15 +18,47 @@
 
   try {
     var DSTATE = {
-      code: "BS", grade: "S235",
+      code: "BS", grade: "S275",
       Kx: 2.0, Ky: 2.0, KT: 2.0, KLT: 2.0, KLTOverride: null,
       cantilever: true, bracePts: "", mcrMethod: "fe", rootWarpingRestrained: false,
       ulsMethod: "610ab", slsMethod: "q-only",
       psi0: 1.0, psi1: 0.9, psi2: 0.8,
       inspanLimit: 360, swayLimit: 150,
       ltbRoot: "lat-torsion", ltbTip: "free", ltbDestabilizing: false,
-      pfcTorsionConfirmed: false
+      pfcTorsionConfirmed: false,
+      baseFixity: "fixed"
     };
+
+    // ---- Column base rotational restraint -> effective length factor ----------
+    // A free-top (sway) column with a base rotational spring k_theta buckles per
+    //   beta * tan(beta) = rho ,  rho = k_theta * H / (E * Icol) ,  Ky = pi / beta.
+    // Limits: rho -> inf  => Ky = 2  (fixed flagpole);  rho -> 0 => Ky -> inf (pin).
+    function baseSpringEffectiveK(rho) {
+      if (!(rho > 0)) return { K: Infinity, beta: 0 };
+      var lo = 1e-9, hi = Math.PI / 2 - 1e-12;
+      for (var i = 0; i < 200; i++) { var m = (lo + hi) / 2; if (m * Math.tan(m) - rho > 0) hi = m; else lo = m; }
+      var beta = (lo + hi) / 2;
+      return { K: Math.PI / beta, beta: beta };
+    }
+    // Base rotational stiffness supplied by the base tie (a beam framing into the
+    // column base and running to a second vertical support):
+    //   k_theta = C * E * Itie / Ltie ,  C = 3 (far end free to rotate) or 4 (far end fixed).
+    function columnBaseModel(frameInput) {
+      var E = frameInput.E || 210000;
+      var Icol = frameInput.colSection ? frameInput.colSection.I_mm4 : 0;   // column in-plane (major) I
+      var H = frameInput.columnHeight || 0;
+      var Itie = frameInput.baseSection ? frameInput.baseSection.I_mm4 : 0; // base-tie in-plane I
+      var Ltie = frameInput.baseLen || 0;
+      var rel = frameInput.bottomRelease || "none";                         // base-tie member end releases
+      var colEndReleased = (rel === "both" || rel === "left");              // released at the column-base end
+      var farEndReleased = (rel === "both" || rel === "right");
+      var tieRestrains = !colEndReleased && Itie > 0 && Ltie > 0 && Icol > 0 && H > 0;
+      var C = (frameInput.rightSupport === "fixed" && !farEndReleased) ? 4 : 3;
+      var kTheta = tieRestrains ? C * E * Itie / Ltie : 0;                   // N.mm / rad
+      var rho = tieRestrains ? kTheta * H / (E * Icol) : 0;
+      var Kpartial = baseSpringEffectiveK(rho).K;
+      return { E: E, Icol: Icol, H: H, Itie: Itie, Ltie: Ltie, C: C, kTheta: kTheta, rho: rho, Kpartial: Kpartial, tieRestrains: tieRestrains };
+    }
 
     var css = document.createElement("style");
     css.textContent =
@@ -47,6 +79,17 @@
       "@media(max-width:700px){#dzSheet{padding:12px 8px;overflow:hidden}#dzSheet .dz-tab{width:100%;table-layout:fixed;font-size:10.5px}#dzSheet .dz-tab td{padding:3px 3px 3px 0;white-space:normal;overflow-wrap:anywhere;word-break:normal}#dzSheet .dz-tab td.l{width:27%;padding-left:0}#dzSheet .dz-tab td.s{width:34%}#dzSheet .dz-tab td.v{width:23%;text-align:left}#dzSheet .dz-tab td.st{width:16%;text-align:right}}";
     document.head.appendChild(printCss);
 
+    var workspaceCss = document.createElement("style");
+    workspaceCss.textContent =
+      ".dz-wrap{max-width:none}.dz-inputs{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));align-items:end;gap:12px;margin-bottom:14px;padding:15px;background:#f7fafc;border:1px solid #d9e3eb;border-radius:10px;box-shadow:0 4px 15px rgba(20,40,61,.04)}" +
+      ".dz-inputs label{min-width:0;color:#314357}.dz-inputs input,.dz-inputs select,.dz-inputs label.dz-select-wide select,.dz-inputs label.dz-wide input{width:100%;height:34px;border-color:#c7d3de;border-radius:7px;background:#fff}.dz-inputs label.dz-wide,.dz-inputs label.dz-select-wide{grid-column:span 2}.dz-inputs input:focus,.dz-inputs select:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(20,125,141,.10)}" +
+      ".dz-inputs .dz-chk{min-height:34px;max-width:none;padding:7px 9px;background:#fff;border:1px solid #dce5ec;border-radius:7px}.dz-inputs #dzRun{min-height:34px;background:var(--accent);border-color:var(--accent)}" +
+      ".dz-gov{position:relative;padding:14px 16px 14px 18px;border-width:1px 1px 1px 5px;border-radius:10px;box-shadow:0 4px 14px rgba(20,40,61,.04)}.dz-gov.ok{background:#e9f8f3;border-color:#9ed9c8;border-left-color:#168168;color:#145f4d}.dz-gov.bad{background:#fff0ef;border-color:#efb8b3;border-left-color:#c43b31;color:#8d2b25}.dz-gov.hold{background:#fff8e9;border-color:#ead093;border-left-color:#c48719;color:#72500e}" +
+      ".dz-diag{padding:10px 12px;background:#f3f7fa;border-color:#dce5ec;border-radius:8px;line-height:1.65}.dz-block{margin-bottom:16px}.dz-block h3{display:flex;align-items:center;gap:10px;margin-bottom:7px;color:#193047;font-size:13px}.dz-block h3:after{content:'';height:1px;flex:1;background:#dce5ec}.dz-tab{border:1px solid #dce5ec;border-radius:8px;border-collapse:separate;border-spacing:0;overflow:hidden}.dz-tab td{padding:6px 8px;border-color:#e5ebf0}.dz-tab tr:nth-child(odd) td{background:#f9fbfc}" +
+      "@media screen{#dzSheet{padding:18px 20px;background:#fff;border-color:#d7e1e9;border-radius:10px;box-shadow:0 8px 24px rgba(20,40,61,.05);font-family:var(--sans);color:var(--ink)}#dzSheet .dz-block h3{font-family:var(--sans);font-size:14px;color:#193047}#dzSheet .dz-tab{font-family:var(--sans);font-size:11.5px}#dzSheet .dz-tab td{padding:6px 8px;font-family:var(--sans);color:var(--ink);border-bottom:1px solid #e5ebf0}#dzSheet .dz-tab td.l{font-weight:650;padding-left:8px}#dzSheet .dz-tab td.s,#dzSheet .dz-tab td.v{font-family:var(--mono)}}" +
+      "@media(max-width:700px){.dz-inputs{grid-template-columns:1fr 1fr;padding:11px;gap:9px}.dz-inputs label.dz-wide,.dz-inputs label.dz-select-wide{grid-column:span 2}.dz-inputs .dz-chk{grid-column:span 2}.dz-tab{display:block;overflow-x:auto}}@media(max-width:430px){.dz-inputs{grid-template-columns:1fr}.dz-inputs label.dz-wide,.dz-inputs label.dz-select-wide,.dz-inputs .dz-chk{grid-column:auto}}";
+    document.head.appendChild(workspaceCss);
+
     var libBtn = document.querySelector('.tab[data-tab="libraryTab"]');
     var strip = document.querySelector(".tabstrip");
     var wrap = document.querySelector(".tabwrap");
@@ -56,7 +99,7 @@
     btn.className = "tab";
     btn.type = "button";
     btn.dataset.tab = "designTab";
-    btn.textContent = "Column design";
+    btn.textContent = "Member design";
     if (libBtn) libBtn.parentNode.insertBefore(btn, libBtn); else strip.appendChild(btn);
 
     var panel = document.createElement("div");
@@ -65,7 +108,8 @@
     panel.innerHTML = '<div class="dz-wrap">' +
       '<div class="dz-inputs">' +
       '<label class="dz-select-wide">Design code<select id="dzCode"><option value="BS">BS 5950-1:2000</option><option value="EC3">EN 1993-1-1 UK NA</option></select></label>' +
-      '<label>Steel grade<select id="dzGrade"><option>S235</option><option>S275</option><option>S355</option></select></label>' +
+      '<label>Steel grade<select id="dzGrade"><option>S235</option><option selected>S275</option><option>S355</option></select></label>' +
+      '<label class="dz-select-wide">Column base fixity<select id="dzBaseFixity"><option value="fixed" selected>Fixed base - flagpole (K=2)</option><option value="partial">Partial fixity from base tie</option><option value="manual">Manual K_y (below)</option></select></label>' +
       '<label>K_y about y-y<input id="dzKx" type="number" min="0.1" step="0.05" value="2.0"></label>' +
       '<label>K_z unrestrained<input id="dzKy" type="number" min="0.1" step="0.05" value="2.0"></label>' +
       '<label>K_z,eff<input id="dzKyEff" type="text" value="2.000" readonly></label>' +
@@ -75,11 +119,6 @@
       '<label class="dz-ec dz-ncci">NCCI k<input id="dzEcKlt" type="number" min="0.5" step="0.05" value="1.0"></label>' +
       '<span class="dz-chk"><input id="dzCant" type="checkbox" checked disabled><label for="dzCant">Fixed-free column</label></span>' +
       '<label class="dz-wide">Minor restraints from base (mm)<input id="dzBracePts" type="text" placeholder="1200, 2400, 3600"></label>' +
-      '<label class="dz-ec dz-select-wide">ULS method<select id="dzUls"><option value="610ab">EN 1990 6.10a/6.10b envelope</option><option value="610">EN 1990 6.10</option><option value="as-run">Analysis factors as entered</option></select></label>' +
-      '<label class="dz-ec">Psi0<input id="dzPsi0" type="number" min="0" max="1" step="0.05" value="1.0"></label>' +
-      '<label class="dz-ec dz-select-wide">SLS case<select id="dzSls"><option value="q-only">Variable action only</option><option value="characteristic">Characteristic G + Q</option><option value="frequent">Frequent G + psi1 Q</option><option value="quasi">Quasi-permanent G + psi2 Q</option></select></label>' +
-      '<label class="dz-ec">Psi1<input id="dzPsi1" type="number" min="0" max="1" step="0.05" value="0.9"></label>' +
-      '<label class="dz-ec">Psi2<input id="dzPsi2" type="number" min="0" max="1" step="0.05" value="0.8"></label>' +
       '<label class="dz-ec">Bow H/<input id="dzInspanLimit" type="number" min="1" step="10" value="360"></label>' +
       '<label class="dz-ec">Sway H/<input id="dzSwayLimit" type="number" min="1" step="10" value="150"></label>' +
       '<label class="dz-ec dz-fe dz-select-wide">FE root warping<select id="dzLtbRoot"><option value="free" selected>Free warping</option><option value="restrained">Restrained warping</option></select></label>' +
@@ -101,6 +140,8 @@
     function syncDesignState() {
       DSTATE.code = document.getElementById("dzCode").value;
       DSTATE.grade = document.getElementById("dzGrade").value;
+      var baseFixityEl = document.getElementById("dzBaseFixity");
+      DSTATE.baseFixity = baseFixityEl ? baseFixityEl.value : "fixed";
       DSTATE.Kx = numberFrom("dzKx", 2);
       DSTATE.Ky = numberFrom("dzKy", 2);
       DSTATE.KT = numberFrom("dzKt", 2);
@@ -110,11 +151,6 @@
       DSTATE.cantilever = true;
       DSTATE.mcrMethod = document.getElementById("dzMcrMethod").value;
       DSTATE.bracePts = document.getElementById("dzBracePts").value || "";
-      DSTATE.ulsMethod = document.getElementById("dzUls").value;
-      DSTATE.slsMethod = document.getElementById("dzSls").value;
-      DSTATE.psi0 = numberFrom("dzPsi0", 1);
-      DSTATE.psi1 = numberFrom("dzPsi1", 0.9);
-      DSTATE.psi2 = numberFrom("dzPsi2", 0.8);
       DSTATE.inspanLimit = numberFrom("dzInspanLimit", 360);
       DSTATE.swayLimit = numberFrom("dzSwayLimit", 150);
       DSTATE.rootWarpingRestrained = document.getElementById("dzLtbRoot").value === "restrained";
@@ -131,8 +167,8 @@
       document.querySelectorAll("#designTab .dz-fe").forEach(function (el) { el.style.display = ec3 && DSTATE.mcrMethod === "fe" ? "" : "none"; });
       document.querySelectorAll("#designTab .dz-ncci").forEach(function (el) { el.style.display = ec3 && DSTATE.mcrMethod === "ncci" ? "" : "none"; });
       document.getElementById("dzNote").textContent = ec3
-        ? "EN 1990 and BS EN 1993-1-1 UK NA member scope. Frame forces come from the first-order 2D solver. Mcr uses either the dedicated fixed-free Vlasov eigenvalue solver or the selected NCCI MasterSeries-style coefficient route."
-        : "BS 5950-1:2000 member design. Analysis forces are taken from the current RackFrame2D run; explicit minor-axis restraints exclude horizontal cantilever arms.";
+        ? "BS EN 1993-1-1 UK NA member scope. Column forces come from the explicit ULS combination in Frame inputs; deflection checks use the explicit SLS combination. Mcr uses either the dedicated fixed-free Vlasov eigenvalue solver or the selected NCCI route."
+        : "BS 5950-1:2000 member design. Column forces come from the explicit ULS combination in Frame inputs; deflection checks use the explicit SLS combination. Minor-axis restraint points exclude horizontal cantilever arms.";
     }
 
     btn.addEventListener("click", function () {
@@ -143,7 +179,7 @@
       refresh();
     });
 
-    var changeIds = ["dzCode", "dzGrade", "dzKx", "dzKy", "dzKt", "dzKlt", "dzEcKlt", "dzMcrMethod", "dzUls", "dzSls", "dzPsi0", "dzPsi1", "dzPsi2", "dzInspanLimit", "dzSwayLimit", "dzLtbRoot", "dzPfcTorsion"];
+    var changeIds = ["dzCode", "dzGrade", "dzBaseFixity", "dzKx", "dzKy", "dzKt", "dzKlt", "dzEcKlt", "dzMcrMethod", "dzInspanLimit", "dzSwayLimit", "dzLtbRoot", "dzPfcTorsion"];
     changeIds.forEach(function (id) {
       document.getElementById(id).addEventListener("change", function () { syncDesignState(); syncVisibility(); refresh(); });
     });
@@ -325,14 +361,31 @@
 
     function makeDesignInput(si, st, caseResult, comboLabel, deflection, braceCalc) {
       var minorBracePoints = braceCalc && braceCalc.active ? braceCalc.points : [];
+
+      // Column base fixity model -> major-axis (in-plane) effective length.
+      var baseModel = columnBaseModel(caseResult.input);
+      var majorK, baseFixedForMcr;
+      if (DSTATE.baseFixity === "partial") {
+        majorK = Number.isFinite(baseModel.Kpartial) ? baseModel.Kpartial : DSTATE.Kx;
+        baseFixedForMcr = true;              // tie restrains the base; Mcr uses fixed-free as an upper bound
+      } else if (DSTATE.baseFixity === "manual") {
+        majorK = DSTATE.Kx;
+        baseFixedForMcr = caseResult.input.leftSupport === "fixed";
+      } else {                                // "fixed" flagpole (default)
+        majorK = 2.0;
+        baseFixedForMcr = true;
+      }
+      baseModel.mode = DSTATE.baseFixity;
+      baseModel.majorK = majorK;
+
       return {
         grade: DSTATE.grade,
         py: DSTATE.code === "EC3" ? si.fy : si.pyBS,
         H: st.H,
         combo: comboLabel,
-        Kx: DSTATE.Kx,
+        Kx: majorK,
         Ky: DSTATE.Ky,
-        KyMajor: DSTATE.Kx,
+        KyMajor: majorK,
         KzMinor: DSTATE.Ky,
         KT: DSTATE.KT,
         KLT: DSTATE.KLT,
@@ -340,7 +393,8 @@
         cantileverLTB: DSTATE.cantilever,
         mcrMethod: DSTATE.mcrMethod,
         columnTopFree: true,
-        columnBaseFixed: caseResult.input.leftSupport === "fixed",
+        columnBaseFixed: baseFixedForMcr,
+        baseModelInfo: baseModel,
         swayMode: true,
         rootWarpingRestrained: DSTATE.rootWarpingRestrained,
         axis: si.minor ? "minor" : "major",
@@ -401,21 +455,18 @@
           braceNote = "minor-axis restraints " + braceCalc.points.map(function (point) { return Math.round(point); }).join(", ") + " mm; arms ignored; Kz,eff=" + kzEffective.toFixed(3) + "; governing " + braceCalc.govSeg;
         }
 
-        var slsDef;
-        if (DSTATE.code === "EC3") {
-          var slsCase = LOAD_CASES.slsCase(DSTATE.slsMethod, { psi1: DSTATE.psi1, psi2: DSTATE.psi2 });
-          var slsResult = analyzeCase(source, slsCase.gammaG, slsCase.gammaQ);
-          slsDef = deflectionsFor(slsResult, sourceSt.H);
-          slsDef.combo = slsCase.label;
-          slsDef.inspanLimit = DSTATE.inspanLimit;
-          slsDef.swayLimit = DSTATE.swayLimit;
-        } else {
-          slsDef = deflectionsFor(source, sourceSt.H);
-        }
+        var slsSource = window.lastSlsResult || source;
+        var slsDef = deflectionsFor(slsSource, sourceSt.H);
+        slsDef.combo = "SLS: " + slsSource.input.gammaG.toFixed(3) + "G + " + slsSource.input.gammaQ.toFixed(3) + "Q";
+        slsDef.inspanLimit = DSTATE.inspanLimit;
+        slsDef.swayLimit = DSTATE.swayLimit;
 
-        var caseDefs = DSTATE.code === "EC3"
-          ? LOAD_CASES.ulsCases(DSTATE.ulsMethod, { psi0: DSTATE.psi0, gammaG: source.input.gammaG, gammaQ: source.input.gammaQ })
-          : [{ id: "bs-run", gammaG: source.input.gammaG, gammaQ: source.input.gammaQ, label: source.input.gammaG + "G + " + source.input.gammaQ + "Q as run" }];
+        var caseDefs = [{
+          id: "ui-uls",
+          gammaG: source.input.gammaG,
+          gammaQ: source.input.gammaQ,
+          label: "ULS: " + source.input.gammaG.toFixed(3) + "G + " + source.input.gammaQ.toFixed(3) + "Q"
+        }];
 
         var evaluated = caseDefs.map(function (caseDef) {
           var caseResult = analyzeCase(source, caseDef.gammaG, caseDef.gammaQ);
@@ -449,7 +500,28 @@
         (selected.result.pointLoadMarks || []).forEach(function (mark) { sumP += Math.max(mark.P, 0); });
         var baseWarning = source.input.leftSupport !== "fixed" ? " | BASE IS " + source.input.leftSupport.toUpperCase() + ": cantilever assumptions require review" : "";
         var mcrText = out.derived && out.derived.mcrMethod ? " | Mcr: " + out.derived.mcrMethod : "";
-        diag.innerHTML = '<div class="dz-diag">ULS ' + selected.caseDef.label + " | F=" + st.F.toFixed(3) + " kN | Mmax=" + st.Mmax.toFixed(3) + " kN.m | V=" + st.Fv.toFixed(3) + " kN | quarter-point |M|=" + st.M2.toFixed(2) + "/" + st.M3.toFixed(2) + "/" + st.M4.toFixed(2) + " kN.m | factored point loads=" + (sumP / 1000).toFixed(2) + " kN | SLS " + (slsDef.combo || "analysis case as run") + " | first-order 2D" + baseWarning + (braceNote ? " | " + braceNote : "") + (impactNote ? " | " + impactNote : "") + mcrText + "</div>";
+
+        // Base fixity model summary + reflect the derived K_y in the panel.
+        var bmi = designInput.baseModelInfo || {};
+        var kyStr = Number.isFinite(bmi.majorK) ? bmi.majorK.toFixed(3) : "inf";
+        var baseFixityText;
+        if (bmi.mode === "partial") {
+          baseFixityText = bmi.tieRestrains
+            ? " | Base: PARTIAL fixity from tie (k_theta=" + (bmi.kTheta / 1e6).toFixed(0) + " kN.m/rad, rho=" + bmi.rho.toFixed(2) + ") -> K_y=" + kyStr
+            : " | Base: tie gives no restraint -> effectively PINNED (K_y=inf)";
+        } else if (bmi.mode === "manual") {
+          baseFixityText = " | Base: MANUAL K_y=" + kyStr;
+        } else {
+          baseFixityText = " | Base: FIXED flagpole, K_y=2.000";
+        }
+        var dzKxEl = document.getElementById("dzKx");
+        if (dzKxEl) {
+          var manualMode = bmi.mode === "manual";
+          dzKxEl.readOnly = !manualMode;
+          if (!manualMode) dzKxEl.value = kyStr;
+        }
+
+        diag.innerHTML = '<div class="dz-diag">ULS ' + selected.caseDef.label + " | F=" + st.F.toFixed(3) + " kN | Mmax=" + st.Mmax.toFixed(3) + " kN.m | V=" + st.Fv.toFixed(3) + " kN | quarter-point |M|=" + st.M2.toFixed(2) + "/" + st.M3.toFixed(2) + "/" + st.M4.toFixed(2) + " kN.m | factored point loads=" + (sumP / 1000).toFixed(2) + " kN | SLS " + (slsDef.combo || "analysis case as run") + " | first-order 2D" + baseFixityText + baseWarning + (braceNote ? " | " + braceNote : "") + (impactNote ? " | " + impactNote : "") + mcrText + "</div>";
 
         var html = "";
         out.blocks.forEach(function (designBlock) {

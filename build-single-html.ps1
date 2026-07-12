@@ -11,7 +11,8 @@ $pattern = '<script src="([^"]+)"></script>'
 $html = [regex]::Replace($html, $pattern, {
   param($match)
   $src = $match.Groups[1].Value
-  $path = Join-Path $root ($src -replace '/', '\')
+  $cleanSrc = ($src -split '\?', 2)[0]
+  $path = Join-Path $root ($cleanSrc -replace '/', '\')
   if (-not (Test-Path $path)) { return $match.Value }
   $js = [IO.File]::ReadAllText($path, $utf8)
   return '<script>' + "`r`n" + $js.Trim() + "`r`n" + '</script>'
