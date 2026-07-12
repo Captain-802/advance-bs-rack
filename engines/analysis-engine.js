@@ -1655,16 +1655,22 @@ function attachMemberInteraction(ln, result, el, idx) {
   });
 }
 function resetView() { modelFitPending = true; if (lastResult) renderModelSvg(lastResult); }
+function zoomModel(factor, clientX, clientY) {
+  const svg = $("modelSvg"); if (!svg) return;
+  const r = svg.getBoundingClientRect(), w = r.width || 1, h = r.height || 1;
+  const px = Number.isFinite(clientX) ? clientX : r.left + w / 2;
+  const py = Number.isFinite(clientY) ? clientY : r.top + h / 2;
+  const ux = VB[0] + (px - r.left) / w * VB[2], uy = VB[1] + (py - r.top) / h * VB[3];
+  const nw = Math.min(4000, Math.max(120, VB[2] * factor)), nh = Math.min(2480, Math.max(74, VB[3] * factor));
+  VB = [ux - (ux - VB[0]) * (nw / VB[2]), uy - (uy - VB[1]) * (nh / VB[3]), nw, nh];
+  svg.setAttribute("viewBox", VB.join(" "));
+}
 function wireCanvas() {
   const svg = $("modelSvg"); if (!svg) return;
   svg.addEventListener("wheel", (e) => {
+    if (!e.ctrlKey && !e.metaKey) return;
     e.preventDefault();
-    const r = svg.getBoundingClientRect(), w = r.width || 1, h = r.height || 1;
-    const ux = VB[0] + (e.clientX - r.left) / w * VB[2], uy = VB[1] + (e.clientY - r.top) / h * VB[3];
-    const f = e.deltaY < 0 ? 0.86 : 1.16;
-    const nw = Math.min(4000, Math.max(120, VB[2] * f)), nh = Math.min(2480, Math.max(74, VB[3] * f));
-    VB = [ux - (ux - VB[0]) * (nw / VB[2]), uy - (uy - VB[1]) * (nh / VB[3]), nw, nh];
-    svg.setAttribute("viewBox", VB.join(" "));
+    zoomModel(e.deltaY < 0 ? 0.86 : 1.16, e.clientX, e.clientY);
   }, { passive: false });
   let pan = null;
   svg.addEventListener("pointerdown", (e) => {
@@ -1787,6 +1793,8 @@ function init() {
   wireCanvas();
   if ($("animBtn")) $("animBtn").addEventListener("click", toggleAnim);
   if ($("resetView")) $("resetView").addEventListener("click", resetView);
+  if ($("zoomOutBtn")) $("zoomOutBtn").addEventListener("click", () => zoomModel(1.16));
+  if ($("zoomInBtn")) $("zoomInBtn").addEventListener("click", () => zoomModel(0.86));
   if ($("extrudeBtn")) $("extrudeBtn").addEventListener("click", () => {
     EXTRUDE = !EXTRUDE;
     const b = $("extrudeBtn");

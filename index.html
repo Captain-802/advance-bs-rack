@@ -232,7 +232,7 @@
     }
   
     /* dynamic model viz */
-    .stage-model{position:relative;}
+    .stage-model{position:relative; height:clamp(380px,52vh,480px);}
     .modeltools{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
     .rng{display:flex; align-items:center; gap:7px; font-size:11px; font-weight:650; color:#586472;}
     .rng input[type=range]{width:118px; accent-color:var(--accent); cursor:pointer;}
@@ -245,6 +245,7 @@
     .modeltip .tt-row{display:flex; justify-content:space-between; gap:18px; font-family:var(--mono);}
     .modeltip .tt-row span:last-child{color:#cfe0f0;}
     @media(max-width:1100px){ .hide-narrow{display:none;} }
+    @media(max-width:620px){ .stage-model{height:360px;} }
   
     /* point loads along a span */
     .plblock{margin-top:11px; border-top:1px dashed var(--line); padding-top:10px;}
@@ -671,13 +672,15 @@
             <button id="animBtn" class="btn btn-ghost btn-sm" type="button">&#9654; Animate</button>
             <label class="rng">Exaggerate <input id="defMult" type="range" min="0" max="3" step="0.05" value="1"><span id="defMultVal" class="mono-dim">&#215;1.0</span></label>
             <button id="resetView" class="btn btn-ghost btn-sm" type="button">Reset view</button>
+            <button id="zoomOutBtn" class="btn btn-ghost btn-sm" type="button" aria-label="Zoom model out">&#8722; Zoom</button>
+            <button id="zoomInBtn" class="btn btn-ghost btn-sm" type="button" aria-label="Zoom model in">+ Zoom</button>
             <button id="extrudeBtn" class="btn btn-ghost btn-sm" type="button">Extrude</button>
             <span id="scaleLabel" class="mono-dim"></span>
-            <span class="mono-dim hide-narrow" style="margin-left:auto">scroll = zoom &middot; drag = pan &middot; hover a member</span>
+            <span class="mono-dim hide-narrow" style="margin-left:auto">Ctrl/&#8984; + scroll = zoom &middot; drag = pan &middot; wheel = page scroll</span>
           </div>
           <div class="stage stage-model"><svg id="modelSvg" viewBox="0 0 1000 620" role="img" aria-label="Frame model"></svg><div id="modelTip" class="modeltip" hidden></div></div>
           <div id="sectionLegend" class="seclegend"></div>
-          <p class="note">Members are coloured by section — same colour means the same section. The deformed shape and amber sway probe use the <b>SLS</b> combination; red loads and member peak forces use <b>ULS</b>. Scroll to zoom, drag to pan, hover a member for its section and peak forces, click to inspect it in Diagrams.</p>
+          <p class="note">Members are coloured by section — same colour means the same section. The deformed shape and amber sway probe use the <b>SLS</b> combination; red loads and member peak forces use <b>ULS</b>. Use the zoom buttons or hold <b>Ctrl/&#8984;</b> while scrolling to zoom; a normal wheel movement scrolls the page. Drag to pan, hover a member for its section and peak forces, or click to inspect it in Diagrams.</p>
         </div>
 
         <div id="diagramTab" class="panel">
