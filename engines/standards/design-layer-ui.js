@@ -21,6 +21,8 @@
       code: "BS", grade: "S275",
       Kx: 2.0, Ky: 2.0, KT: 2.0, KLT: 2.0, KLTOverride: null,
       cantilever: true, bracePts: "", mcrMethod: "fe", rootWarpingRestrained: false,
+      mcrRootRestraints: { v: true, slope: true, twist: true, warping: false },
+      mcrTipRestraints: { v: false, slope: false, twist: false, warping: false },
       ulsMethod: "610ab", slsMethod: "q-only",
       psi0: 1.0, psi1: 0.9, psi2: 0.8,
       inspanLimit: 360, swayLimit: 150,
@@ -84,6 +86,7 @@
       ".dz-wrap{max-width:none}.dz-inputs{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));align-items:end;gap:12px;margin-bottom:14px;padding:15px;background:#f7fafc;border:1px solid #d9e3eb;border-radius:10px;box-shadow:0 4px 15px rgba(20,40,61,.04)}" +
       ".dz-inputs label{min-width:0;color:#314357}.dz-inputs input,.dz-inputs select,.dz-inputs label.dz-select-wide select,.dz-inputs label.dz-wide input{width:100%;height:34px;border-color:#c7d3de;border-radius:7px;background:#fff}.dz-inputs label.dz-wide,.dz-inputs label.dz-select-wide{grid-column:span 2}.dz-inputs input:focus,.dz-inputs select:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(20,125,141,.10)}" +
       ".dz-inputs .dz-chk{min-height:34px;max-width:none;padding:7px 9px;background:#fff;border:1px solid #dce5ec;border-radius:7px}.dz-inputs #dzRun{min-height:34px;background:var(--accent);border-color:var(--accent)}" +
+      ".dz-fe-boundary{grid-column:1/-1;border:1px solid #cbd8e2;border-radius:9px;background:#fff;padding:10px 12px}.dz-fe-boundary-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px;margin-bottom:7px;color:#243b51;font-size:12px}.dz-fe-boundary-head span{font-weight:400;color:#64748b}.dz-fe-boundary table{width:100%;border-collapse:collapse;font-size:11.5px}.dz-fe-boundary th,.dz-fe-boundary td{padding:5px 8px;border-top:1px solid #e5ebf0;text-align:center}.dz-fe-boundary th:first-child,.dz-fe-boundary td:first-child{text-align:left;font-weight:700}.dz-fe-boundary input[type=checkbox]{width:16px;height:16px;margin:0;vertical-align:middle}.dz-fe-boundary .dz-fe-symbol{font-family:var(--mono);font-weight:700}" +
       ".dz-gov{position:relative;padding:14px 16px 14px 18px;border-width:1px 1px 1px 5px;border-radius:10px;box-shadow:0 4px 14px rgba(20,40,61,.04)}.dz-gov.ok{background:#e9f8f3;border-color:#9ed9c8;border-left-color:#168168;color:#145f4d}.dz-gov.bad{background:#fff0ef;border-color:#efb8b3;border-left-color:#c43b31;color:#8d2b25}.dz-gov.hold{background:#fff8e9;border-color:#ead093;border-left-color:#c48719;color:#72500e}" +
       ".dz-diag{padding:10px 12px;background:#f3f7fa;border-color:#dce5ec;border-radius:8px;line-height:1.65}.dz-block{margin-bottom:16px}.dz-block h3{display:flex;align-items:center;gap:10px;margin-bottom:7px;color:#193047;font-size:13px}.dz-block h3:after{content:'';height:1px;flex:1;background:#dce5ec}.dz-tab{border:1px solid #dce5ec;border-radius:8px;border-collapse:separate;border-spacing:0;overflow:hidden}.dz-tab td{padding:6px 8px;border-color:#e5ebf0}.dz-tab tr:nth-child(odd) td{background:#f9fbfc}" +
       "@media screen{#dzSheet{padding:18px 20px;background:#fff;border-color:#d7e1e9;border-radius:10px;box-shadow:0 8px 24px rgba(20,40,61,.05);font-family:var(--sans);color:var(--ink)}#dzSheet .dz-block h3{font-family:var(--sans);font-size:14px;color:#193047}#dzSheet .dz-tab{font-family:var(--sans);font-size:11.5px}#dzSheet .dz-tab td{padding:6px 8px;font-family:var(--sans);color:var(--ink);border-bottom:1px solid #e5ebf0}#dzSheet .dz-tab td.l{font-weight:650;padding-left:8px}#dzSheet .dz-tab td.s,#dzSheet .dz-tab td.v{font-family:var(--mono)}}" +
@@ -115,14 +118,18 @@
       '<label>K_z,eff<input id="dzKyEff" type="text" value="2.000" readonly></label>' +
       '<label class="dz-ec">K_T<input id="dzKt" type="number" min="0.1" step="0.05" value="2.0"></label>' +
       '<label class="dz-bs">K_LT<input id="dzKlt" type="number" min="0.1" step="0.05" value="2.0"></label>' +
-      '<label class="dz-ec dz-select-wide">Mcr method<select id="dzMcrMethod"><option value="fe">FE eigenvalue - fixed/free</option><option value="ncci">NCCI - MasterSeries style</option></select></label>' +
+      '<label class="dz-ec dz-select-wide">Mcr method<select id="dzMcrMethod"><option value="fe">FE eigenvalue - editable restraints</option><option value="ncci">NCCI - MasterSeries style</option></select></label>' +
       '<label class="dz-ec dz-ncci">NCCI k<input id="dzEcKlt" type="number" min="0.5" step="0.05" value="1.0"></label>' +
-      '<span class="dz-chk"><input id="dzCant" type="checkbox" checked disabled><label for="dzCant">Fixed-free column</label></span>' +
       '<label class="dz-wide">Minor restraints from base (mm)<input id="dzBracePts" type="text" placeholder="1200, 2400, 3600"></label>' +
       '<label class="dz-ec">Bow H/<input id="dzInspanLimit" type="number" min="1" step="10" value="360"></label>' +
       '<label class="dz-ec">Sway H/<input id="dzSwayLimit" type="number" min="1" step="10" value="150"></label>' +
-      '<label class="dz-ec dz-fe dz-select-wide">FE root warping<select id="dzLtbRoot"><option value="free" selected>Free warping</option><option value="restrained">Restrained warping</option></select></label>' +
-      '<label class="dz-ec dz-select-wide">Column tip<select id="dzLtbTip" disabled><option value="free" selected>Free - no fork support</option></select></label>' +
+      '<div class="dz-fe-boundary dz-ec dz-fe">' +
+        '<div class="dz-fe-boundary-head"><strong>FE Mcr end restraints</strong><span>Checked = restrained. These DOFs are independent of manual K_y, K_z and K_LT.</span></div>' +
+        '<table><thead><tr><th>End</th><th><span class="dz-fe-symbol">v</span><br>lateral</th><th><span class="dz-fe-symbol">v&prime;</span><br>slope</th><th><span class="dz-fe-symbol">&phi;</span><br>twist</th><th><span class="dz-fe-symbol">&phi;&prime;</span><br>warping</th></tr></thead><tbody>' +
+        '<tr><td>Column root</td><td><input id="dzFeRootV" type="checkbox" checked aria-label="Restrain root lateral displacement v"></td><td><input id="dzFeRootSlope" type="checkbox" checked aria-label="Restrain root lateral slope"></td><td><input id="dzFeRootTwist" type="checkbox" checked aria-label="Restrain root twist"></td><td><input id="dzFeRootWarp" type="checkbox" aria-label="Restrain root warping"></td></tr>' +
+        '<tr><td>Column tip</td><td><input id="dzFeTipV" type="checkbox" aria-label="Restrain tip lateral displacement v"></td><td><input id="dzFeTipSlope" type="checkbox" aria-label="Restrain tip lateral slope"></td><td><input id="dzFeTipTwist" type="checkbox" aria-label="Restrain tip twist"></td><td><input id="dzFeTipWarp" type="checkbox" aria-label="Restrain tip warping"></td></tr>' +
+        '</tbody></table>' +
+      '</div>' +
       '<span class="dz-chk dz-ec" title="Required for a PFC because the 2D solver does not model connection torsion."><input id="dzPfcTorsion" type="checkbox"><label for="dzPfcTorsion">PFC torsion restrained / checked</label></span>' +
       '<button id="dzRun" class="btn btn-primary btn-sm" type="button">Re-check</button>' +
       '</div>' +
@@ -153,7 +160,19 @@
       DSTATE.bracePts = document.getElementById("dzBracePts").value || "";
       DSTATE.inspanLimit = numberFrom("dzInspanLimit", 360);
       DSTATE.swayLimit = numberFrom("dzSwayLimit", 150);
-      DSTATE.rootWarpingRestrained = document.getElementById("dzLtbRoot").value === "restrained";
+      DSTATE.mcrRootRestraints = {
+        v: document.getElementById("dzFeRootV").checked,
+        slope: document.getElementById("dzFeRootSlope").checked,
+        twist: document.getElementById("dzFeRootTwist").checked,
+        warping: document.getElementById("dzFeRootWarp").checked
+      };
+      DSTATE.mcrTipRestraints = {
+        v: document.getElementById("dzFeTipV").checked,
+        slope: document.getElementById("dzFeTipSlope").checked,
+        twist: document.getElementById("dzFeTipTwist").checked,
+        warping: document.getElementById("dzFeTipWarp").checked
+      };
+      DSTATE.rootWarpingRestrained = DSTATE.mcrRootRestraints.warping;
       DSTATE.ltbRoot = "lat-torsion";
       DSTATE.ltbTip = "free";
       DSTATE.ltbDestabilizing = false;
@@ -167,7 +186,7 @@
       document.querySelectorAll("#designTab .dz-fe").forEach(function (el) { el.style.display = ec3 && DSTATE.mcrMethod === "fe" ? "" : "none"; });
       document.querySelectorAll("#designTab .dz-ncci").forEach(function (el) { el.style.display = ec3 && DSTATE.mcrMethod === "ncci" ? "" : "none"; });
       document.getElementById("dzNote").textContent = ec3
-        ? "BS EN 1993-1-1 UK NA member scope. Column forces come from the explicit ULS combination in Frame inputs; deflection checks use the explicit SLS combination. Mcr uses either the dedicated fixed-free Vlasov eigenvalue solver or the selected NCCI route."
+        ? "BS EN 1993-1-1 UK NA member scope. Column forces come from the explicit ULS combination in Frame inputs; deflection checks use the explicit SLS combination. FE Mcr uses the separately declared v, v-prime, twist and warping end restraints; manual effective lengths do not change the FE boundary."
         : "BS 5950-1:2000 member design. Column forces come from the explicit ULS combination in Frame inputs; deflection checks use the explicit SLS combination. Minor-axis restraint points exclude horizontal cantilever arms.";
     }
 
@@ -179,7 +198,7 @@
       refresh();
     });
 
-    var changeIds = ["dzCode", "dzGrade", "dzBaseFixity", "dzKx", "dzKy", "dzKt", "dzKlt", "dzEcKlt", "dzMcrMethod", "dzInspanLimit", "dzSwayLimit", "dzLtbRoot", "dzPfcTorsion"];
+    var changeIds = ["dzCode", "dzGrade", "dzBaseFixity", "dzKx", "dzKy", "dzKt", "dzKlt", "dzEcKlt", "dzMcrMethod", "dzInspanLimit", "dzSwayLimit", "dzFeRootV", "dzFeRootSlope", "dzFeRootTwist", "dzFeRootWarp", "dzFeTipV", "dzFeTipSlope", "dzFeTipTwist", "dzFeTipWarp", "dzPfcTorsion"];
     changeIds.forEach(function (id) {
       document.getElementById(id).addEventListener("change", function () { syncDesignState(); syncVisibility(); refresh(); });
     });
@@ -367,7 +386,7 @@
       var majorK, baseFixedForMcr;
       if (DSTATE.baseFixity === "partial") {
         majorK = Number.isFinite(baseModel.Kpartial) ? baseModel.Kpartial : DSTATE.Kx;
-        baseFixedForMcr = true;              // tie restrains the base; Mcr uses fixed-free as an upper bound
+        baseFixedForMcr = true;              // retained for legacy calls; the explicit FE restraint table governs Mcr
       } else if (DSTATE.baseFixity === "manual") {
         majorK = DSTATE.Kx;
         baseFixedForMcr = caseResult.input.leftSupport === "fixed";
@@ -397,6 +416,8 @@
         baseModelInfo: baseModel,
         swayMode: true,
         rootWarpingRestrained: DSTATE.rootWarpingRestrained,
+        mcrRootRestraints: Object.assign({}, DSTATE.mcrRootRestraints),
+        mcrTipRestraints: Object.assign({}, DSTATE.mcrTipRestraints),
         axis: si.minor ? "minor" : "major",
         ltbRoot: DSTATE.ltbRoot,
         ltbTip: DSTATE.ltbTip,

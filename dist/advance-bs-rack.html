@@ -603,7 +603,7 @@
               <option value="both">Pinned both ends</option>
               <option value="left">Pinned at column</option>
               <option value="right">Pinned at far end</option>
-              <option value="none" selected>Fixed both ends</option>
+              <option value="none" selected>No releases - welded at column</option>
             </select>
           </label>
           <div class="field-grid-2">
@@ -7860,7 +7860,7 @@ if (typeof document !== "undefined") init();
         var sum = matrix[i][j];
         for (var k = 0; k < j; k++) sum -= lower[i][k] * lower[j][k];
         if (i === j) {
-          if (sum <= tolerance) throw new Error("Elastic LTB stiffness is not positive definite after applying the root restraints.");
+          if (sum <= tolerance) throw new Error("Elastic LTB stiffness is not positive definite after applying the FE boundary restraints.");
           lower[i][j] = Math.sqrt(sum);
         } else {
           lower[i][j] = sum / lower[j][j];
@@ -7929,7 +7929,35 @@ if (typeof document !== "undefined") init();
     return points.filter(function (point, index) { return index === 0 || Math.abs(point - points[index - 1]) > 1e-6; });
   }
 
-  function solveFixedFreeEigen(options, segments, nodes) {
+  function restraintState(value, fallback) {
+    value = value || {};
+    fallback = fallback || { v: false, slope: false, twist: false, warping: false };
+    return {
+      v: value.v == null ? !!fallback.v : !!value.v,
+      slope: value.slope == null ? !!fallback.slope : !!value.slope,
+      twist: value.twist == null ? !!fallback.twist : !!value.twist,
+      warping: value.warping == null ? !!fallback.warping : !!value.warping
+    };
+  }
+
+  function boundaryRestraints(options) {
+    var defaultRoot = { v: true, slope: true, twist: true, warping: !!options.rootWarpingRestrained };
+    var defaultTip = { v: false, slope: false, twist: false, warping: false };
+    return {
+      root: restraintState(options.rootRestraints, defaultRoot),
+      tip: restraintState(options.tipRestraints, defaultTip)
+    };
+  }
+
+  function addEndRestraints(target, nodeIndex, state) {
+    var base = 4 * nodeIndex;
+    if (state.v) target.add(base);
+    if (state.slope) target.add(base + 1);
+    if (state.twist) target.add(base + 2);
+    if (state.warping) target.add(base + 3);
+  }
+
+  function solveVlasovEigen(options, segments, nodes, boundary) {
     var length = options.L;
     var Iz = options.Iz;
     var It = options.It;
@@ -7956,14 +7984,16 @@ if (typeof document !== "undefined") init();
       }
     }
 
-    var restrained = new Set([0, 1, 2]);
-    if (options.rootWarpingRestrained) restrained.add(3);
+    var restrained = new Set();
+    addEndRestraints(restrained, 0, boundary.root);
+    addEndRestraints(restrained, nodes.length - 1, boundary.tip);
     var free = [];
     for (var degree = 0; degree < elastic.length; degree++) if (!restrained.has(degree)) free.push(degree);
+    if (!free.length) throw new Error("All LTB degrees of freedom are restrained.");
     var elasticReduced = free.map(function (row) { return free.map(function (column) { return elastic[row][column]; }); });
     var geometricReduced = free.map(function (row) { return free.map(function (column) { return geometric[row][column]; }); });
     var diagonalScale = elasticReduced.map(function (row, index) {
-      if (!(Math.abs(row[index]) > 0)) throw new Error("Elastic LTB stiffness has a zero diagonal after root restraints.");
+      if (!(Math.abs(row[index]) > 0)) throw new Error("Elastic LTB stiffness has a zero diagonal after applying the FE boundary restraints.");
       return 1 / Math.sqrt(Math.abs(row[index]));
     });
     var elasticScaled = elasticReduced.map(function (row, i) { return row.map(function (value, j) { return value * diagonalScale[i] * diagonalScale[j]; }); });
@@ -7982,7 +8012,7 @@ if (typeof document !== "undefined") init();
     return { alpha: 1 / Math.abs(governing), eigenvalue: governing, freeDof: free.length, restraints: restrained.size };
   }
 
-  function mcrEigenFixedFree(options) {
+  function mcrEigen(options) {
     options = options || {};
     var length = positive(options.L, "L");
     positive(options.Iz, "Iz");
@@ -8000,13 +8030,16 @@ if (typeof document !== "undefined") init();
     if (!(maximumMoment > 1e-9)) throw new Error("No major-axis moment is present for the FE Mcr calculation.");
     var subdivisions = Math.max(12, Math.min(48, Math.round(Number(options.subdivisions) || 24)));
     var nodes = eigenMesh(length, segments, subdivisions);
-    var actual = solveFixedFreeEigen(options, segments, nodes);
+    var boundary = boundaryRestraints(options);
+    var actual = solveVlasovEigen(options, segments, nodes, boundary);
     var uniformSegments = [{ y1: 0, y2: length, M1: signedMaximum, M2: signedMaximum }];
-    var uniform = solveFixedFreeEigen(options, uniformSegments, nodes);
+    var uniform = solveVlasovEigen(options, uniformSegments, nodes, boundary);
     var Mcr = actual.alpha * maximumMoment * 1e6;
     var McrUniform = uniform.alpha * maximumMoment * 1e6;
+    var topFree = !boundary.tip.v && !boundary.tip.slope && !boundary.tip.twist && !boundary.tip.warping;
+    var fixedRoot = boundary.root.v && boundary.root.slope && boundary.root.twist;
     return {
-      method: "1D Vlasov FE eigenvalue; fixed root, free tip",
+      method: fixedRoot && topFree ? "1D Vlasov FE eigenvalue; fixed root, free tip" : "1D Vlasov FE eigenvalue; user-defined end restraints",
       Mcr: Mcr,
       McrUniform: McrUniform,
       C1: Mcr / McrUniform,
@@ -8016,9 +8049,20 @@ if (typeof document !== "undefined") init();
       nodes: nodes.length,
       elements: nodes.length - 1,
       freeDof: actual.freeDof,
-      rootWarpingRestrained: !!options.rootWarpingRestrained,
-      topFree: true
+      restraintCount: actual.restraints,
+      rootWarpingRestrained: boundary.root.warping,
+      rootRestraints: boundary.root,
+      tipRestraints: boundary.tip,
+      topFree: topFree
     };
+  }
+
+  function mcrEigenFixedFree(options) {
+    options = options || {};
+    return mcrEigen(Object.assign({}, options, {
+      rootRestraints: { v: true, slope: true, twist: true, warping: !!options.rootWarpingRestrained },
+      tipRestraints: { v: false, slope: false, twist: false, warping: false }
+    }));
   }
 
   var CANTILEVER_K = {
@@ -8113,6 +8157,7 @@ if (typeof document !== "undefined") init();
     c1QuarterPoint: c1QuarterPoint,
     c1EC3: c1EC3,
     masterSeriesC1: masterSeriesC1,
+    mcrEigen: mcrEigen,
     mcrEigenFixedFree: mcrEigenFixedFree,
     cantileverFactors: cantileverFactors,
     mcrSN003: mcrSN003,
@@ -8628,13 +8673,14 @@ if (typeof document !== "undefined") init();
     }
     var feMcrResult = null;
     if (selectedMcrMethod === "fe" && !isBox && !isChan && axis === "major" && MyEd > 1e-6) {
-      if (inp.columnTopFree === false) {
+      var customFeBoundary = !!(inp.mcrRootRestraints || inp.mcrTipRestraints);
+      if (!customFeBoundary && inp.columnTopFree === false) {
         addIssue("The fixed-free FE Mcr method requires the column tip to be unrestrained.");
-      } else if (inp.columnBaseFixed === false) {
+      } else if (!customFeBoundary && inp.columnBaseFixed === false) {
         addIssue("The fixed-free FE Mcr method requires a fixed column base in the frame model.");
       } else {
         try {
-          feMcrResult = MCR_ENGINE.mcrEigenFixedFree({
+          var eigenOptions = {
             L: inp.H,
             Iz: Iz,
             It: It,
@@ -8642,9 +8688,16 @@ if (typeof document !== "undefined") init();
             momentSegments: inp.momentSegments,
             rootWarpingRestrained: !!inp.rootWarpingRestrained,
             subdivisions: 24
-          });
+          };
+          if (customFeBoundary) {
+            eigenOptions.rootRestraints = inp.mcrRootRestraints;
+            eigenOptions.tipRestraints = inp.mcrTipRestraints;
+            feMcrResult = MCR_ENGINE.mcrEigen(eigenOptions);
+          } else {
+            feMcrResult = MCR_ENGINE.mcrEigenFixedFree(eigenOptions);
+          }
         } catch (feError) {
-          addIssue("Fixed-free FE Mcr could not be calculated: " + feError.message);
+          addIssue("FE Mcr could not be calculated for the selected end restraints: " + feError.message);
         }
       }
     }
@@ -8673,13 +8726,13 @@ if (typeof document !== "undefined") init();
       return detail + "; " + result.equation;
     }
     block("Equivalent Moment Factors");
-    line("Mcr method", selectedMcrMethod === "fe" ? "Dedicated 1D Vlasov eigenvalue model; fixed root and free column tip" : "NCCI SN003 coefficient route matching the MasterSeries output format", selectedMcrMethod === "fe" ? "FE eigenvalue" : "NCCI");
+    line("Mcr method", selectedMcrMethod === "fe" ? "Dedicated 1D Vlasov eigenvalue model using the declared root and tip v, v-prime, phi and phi-prime restraints" : "NCCI SN003 coefficient route matching the MasterSeries output format", selectedMcrMethod === "fe" ? "FE eigenvalue" : "NCCI");
     line("C1 = fn(M1, M2, M0, psi, mu)",
       "M1=" + ft(ncciC1Result.M1, 3) + ", M2=" + ft(ncciC1Result.M2, 3) + ", M0=" + ft(ncciC1Result.M0, 3) +
       " kN.m; psi=" + ft(ncciC1Result.psi, 3) + ", mu=" + ft(ncciC1Result.mu, 3) +
       "; M(L/4), M(L/2), M(3L/4)=" + ft(ncciC1Result.Mq1, 3) + ", " + ft(ncciC1Result.Mmid, 3) + ", " + ft(ncciC1Result.Mq3, 3),
       f3(ncciC1Result.C1), "", "NCCI");
-    if (feMcrResult) line("C1,eff from FE", "Mcr(actual diagram) / Mcr(uniform moment), using identical fixed-free mesh and root warping condition", f3(C1), "", "FE");
+    if (feMcrResult) line("C1,eff from FE", "Mcr(actual diagram) / Mcr(uniform moment), using the identical mesh and declared end restraints", f3(C1), "", "FE");
     line("Cmy", cmySwayOverride ? "Table B.3 sway-buckling override for y-y bending; diagram value " + f3(CmyDiagram) + " is not used" : cmDescription(cmyResult, "z-z braced"), f3(Cmy));
     line("Cmz", cmzSwayOverride ? "Table B.3 sway-buckling override for z-z bending; diagram value " + f3(CmzDiagram) + " is not used" : cmDescription(cmzResult, "y-y braced"), f3(Cmz));
     line("CmLT", cmDescription(cmltResult, "y-y braced"), f3(CmLT));
@@ -8738,9 +8791,18 @@ if (typeof document !== "undefined") init();
           mcrResult = feMcrResult;
           Mcr = feMcrResult.Mcr;
           C1 = feMcrResult.C1;
-          mcrMethod = "1D Vlasov FE eigenvalue; fixed root, free tip";
+          mcrMethod = feMcrResult.method;
           line("FE eigenproblem", "[KE - alpha KG] delta = 0; actual signed moment diagram; " + feMcrResult.elements + " elements, " + feMcrResult.freeDof + " free DOF", "alpha=" + f3(feMcrResult.alpha));
-          line("FE boundary", "root v, v-prime and twist restrained; root warping " + (feMcrResult.rootWarpingRestrained ? "restrained" : "free") + "; no column-tip DOF restrained", "Fixed-free", "", "OK");
+          function restraintSummary(state) {
+            state = state || {};
+            var labels = [];
+            if (state.v) labels.push("v");
+            if (state.slope) labels.push("v-prime");
+            if (state.twist) labels.push("phi");
+            if (state.warping) labels.push("phi-prime");
+            return labels.length ? labels.join(", ") + " restrained" : "all four DOF free";
+          }
+          line("FE boundary", "root: " + restraintSummary(feMcrResult.rootRestraints) + "; tip: " + restraintSummary(feMcrResult.tipRestraints), feMcrResult.topFree ? "Free tip" : "User-defined tip", "", "OK");
           line("Mcr,uniform", "identical FE mesh under uniform moment; used only to derive C1,eff", f3(feMcrResult.McrUniform / 1e6), "kN.m");
         }
       } else {
@@ -8749,7 +8811,7 @@ if (typeof document !== "undefined") init();
           mcrResult = MCR_ENGINE.mcrSN003({ L: inp.H, Iz: Iz, It: It, Iw: Iw, k: ncciK, kw: 1, C1: C1, C2: 0, zg: 0 });
           Mcr = mcrResult.Mcr;
           mcrMethod = "NCCI SN003 / MasterSeries-style C1; k=" + f3(ncciK);
-          line("NCCI parameters", "C1=" + f3(C1) + ", k=" + f3(ncciK) + ", kw=1, C2 zg=0; column FE model remains fixed-free", "MasterSeries-style");
+          line("NCCI parameters", "C1=" + f3(C1) + ", k=" + f3(ncciK) + ", kw=1, C2 zg=0; the editable FE restraint table is not used by this route", "MasterSeries-style");
           addIssue("The NCCI SN003 expression requires lateral and torsional restraint at both member ends; the free column tip does not satisfy that scope. The MasterSeries-style result is shown for comparison only and does not add a fork restraint to the frame model.");
         } catch (snError) {
           addIssue("SN003 Mcr could not be calculated: " + snError.message);
@@ -8991,6 +9053,8 @@ if (typeof document !== "undefined") init();
       code: "BS", grade: "S275",
       Kx: 2.0, Ky: 2.0, KT: 2.0, KLT: 2.0, KLTOverride: null,
       cantilever: true, bracePts: "", mcrMethod: "fe", rootWarpingRestrained: false,
+      mcrRootRestraints: { v: true, slope: true, twist: true, warping: false },
+      mcrTipRestraints: { v: false, slope: false, twist: false, warping: false },
       ulsMethod: "610ab", slsMethod: "q-only",
       psi0: 1.0, psi1: 0.9, psi2: 0.8,
       inspanLimit: 360, swayLimit: 150,
@@ -9054,6 +9118,7 @@ if (typeof document !== "undefined") init();
       ".dz-wrap{max-width:none}.dz-inputs{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));align-items:end;gap:12px;margin-bottom:14px;padding:15px;background:#f7fafc;border:1px solid #d9e3eb;border-radius:10px;box-shadow:0 4px 15px rgba(20,40,61,.04)}" +
       ".dz-inputs label{min-width:0;color:#314357}.dz-inputs input,.dz-inputs select,.dz-inputs label.dz-select-wide select,.dz-inputs label.dz-wide input{width:100%;height:34px;border-color:#c7d3de;border-radius:7px;background:#fff}.dz-inputs label.dz-wide,.dz-inputs label.dz-select-wide{grid-column:span 2}.dz-inputs input:focus,.dz-inputs select:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(20,125,141,.10)}" +
       ".dz-inputs .dz-chk{min-height:34px;max-width:none;padding:7px 9px;background:#fff;border:1px solid #dce5ec;border-radius:7px}.dz-inputs #dzRun{min-height:34px;background:var(--accent);border-color:var(--accent)}" +
+      ".dz-fe-boundary{grid-column:1/-1;border:1px solid #cbd8e2;border-radius:9px;background:#fff;padding:10px 12px}.dz-fe-boundary-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px;margin-bottom:7px;color:#243b51;font-size:12px}.dz-fe-boundary-head span{font-weight:400;color:#64748b}.dz-fe-boundary table{width:100%;border-collapse:collapse;font-size:11.5px}.dz-fe-boundary th,.dz-fe-boundary td{padding:5px 8px;border-top:1px solid #e5ebf0;text-align:center}.dz-fe-boundary th:first-child,.dz-fe-boundary td:first-child{text-align:left;font-weight:700}.dz-fe-boundary input[type=checkbox]{width:16px;height:16px;margin:0;vertical-align:middle}.dz-fe-boundary .dz-fe-symbol{font-family:var(--mono);font-weight:700}" +
       ".dz-gov{position:relative;padding:14px 16px 14px 18px;border-width:1px 1px 1px 5px;border-radius:10px;box-shadow:0 4px 14px rgba(20,40,61,.04)}.dz-gov.ok{background:#e9f8f3;border-color:#9ed9c8;border-left-color:#168168;color:#145f4d}.dz-gov.bad{background:#fff0ef;border-color:#efb8b3;border-left-color:#c43b31;color:#8d2b25}.dz-gov.hold{background:#fff8e9;border-color:#ead093;border-left-color:#c48719;color:#72500e}" +
       ".dz-diag{padding:10px 12px;background:#f3f7fa;border-color:#dce5ec;border-radius:8px;line-height:1.65}.dz-block{margin-bottom:16px}.dz-block h3{display:flex;align-items:center;gap:10px;margin-bottom:7px;color:#193047;font-size:13px}.dz-block h3:after{content:'';height:1px;flex:1;background:#dce5ec}.dz-tab{border:1px solid #dce5ec;border-radius:8px;border-collapse:separate;border-spacing:0;overflow:hidden}.dz-tab td{padding:6px 8px;border-color:#e5ebf0}.dz-tab tr:nth-child(odd) td{background:#f9fbfc}" +
       "@media screen{#dzSheet{padding:18px 20px;background:#fff;border-color:#d7e1e9;border-radius:10px;box-shadow:0 8px 24px rgba(20,40,61,.05);font-family:var(--sans);color:var(--ink)}#dzSheet .dz-block h3{font-family:var(--sans);font-size:14px;color:#193047}#dzSheet .dz-tab{font-family:var(--sans);font-size:11.5px}#dzSheet .dz-tab td{padding:6px 8px;font-family:var(--sans);color:var(--ink);border-bottom:1px solid #e5ebf0}#dzSheet .dz-tab td.l{font-weight:650;padding-left:8px}#dzSheet .dz-tab td.s,#dzSheet .dz-tab td.v{font-family:var(--mono)}}" +
@@ -9085,14 +9150,18 @@ if (typeof document !== "undefined") init();
       '<label>K_z,eff<input id="dzKyEff" type="text" value="2.000" readonly></label>' +
       '<label class="dz-ec">K_T<input id="dzKt" type="number" min="0.1" step="0.05" value="2.0"></label>' +
       '<label class="dz-bs">K_LT<input id="dzKlt" type="number" min="0.1" step="0.05" value="2.0"></label>' +
-      '<label class="dz-ec dz-select-wide">Mcr method<select id="dzMcrMethod"><option value="fe">FE eigenvalue - fixed/free</option><option value="ncci">NCCI - MasterSeries style</option></select></label>' +
+      '<label class="dz-ec dz-select-wide">Mcr method<select id="dzMcrMethod"><option value="fe">FE eigenvalue - editable restraints</option><option value="ncci">NCCI - MasterSeries style</option></select></label>' +
       '<label class="dz-ec dz-ncci">NCCI k<input id="dzEcKlt" type="number" min="0.5" step="0.05" value="1.0"></label>' +
-      '<span class="dz-chk"><input id="dzCant" type="checkbox" checked disabled><label for="dzCant">Fixed-free column</label></span>' +
       '<label class="dz-wide">Minor restraints from base (mm)<input id="dzBracePts" type="text" placeholder="1200, 2400, 3600"></label>' +
       '<label class="dz-ec">Bow H/<input id="dzInspanLimit" type="number" min="1" step="10" value="360"></label>' +
       '<label class="dz-ec">Sway H/<input id="dzSwayLimit" type="number" min="1" step="10" value="150"></label>' +
-      '<label class="dz-ec dz-fe dz-select-wide">FE root warping<select id="dzLtbRoot"><option value="free" selected>Free warping</option><option value="restrained">Restrained warping</option></select></label>' +
-      '<label class="dz-ec dz-select-wide">Column tip<select id="dzLtbTip" disabled><option value="free" selected>Free - no fork support</option></select></label>' +
+      '<div class="dz-fe-boundary dz-ec dz-fe">' +
+        '<div class="dz-fe-boundary-head"><strong>FE Mcr end restraints</strong><span>Checked = restrained. These DOFs are independent of manual K_y, K_z and K_LT.</span></div>' +
+        '<table><thead><tr><th>End</th><th><span class="dz-fe-symbol">v</span><br>lateral</th><th><span class="dz-fe-symbol">v&prime;</span><br>slope</th><th><span class="dz-fe-symbol">&phi;</span><br>twist</th><th><span class="dz-fe-symbol">&phi;&prime;</span><br>warping</th></tr></thead><tbody>' +
+        '<tr><td>Column root</td><td><input id="dzFeRootV" type="checkbox" checked aria-label="Restrain root lateral displacement v"></td><td><input id="dzFeRootSlope" type="checkbox" checked aria-label="Restrain root lateral slope"></td><td><input id="dzFeRootTwist" type="checkbox" checked aria-label="Restrain root twist"></td><td><input id="dzFeRootWarp" type="checkbox" aria-label="Restrain root warping"></td></tr>' +
+        '<tr><td>Column tip</td><td><input id="dzFeTipV" type="checkbox" aria-label="Restrain tip lateral displacement v"></td><td><input id="dzFeTipSlope" type="checkbox" aria-label="Restrain tip lateral slope"></td><td><input id="dzFeTipTwist" type="checkbox" aria-label="Restrain tip twist"></td><td><input id="dzFeTipWarp" type="checkbox" aria-label="Restrain tip warping"></td></tr>' +
+        '</tbody></table>' +
+      '</div>' +
       '<span class="dz-chk dz-ec" title="Required for a PFC because the 2D solver does not model connection torsion."><input id="dzPfcTorsion" type="checkbox"><label for="dzPfcTorsion">PFC torsion restrained / checked</label></span>' +
       '<button id="dzRun" class="btn btn-primary btn-sm" type="button">Re-check</button>' +
       '</div>' +
@@ -9123,7 +9192,19 @@ if (typeof document !== "undefined") init();
       DSTATE.bracePts = document.getElementById("dzBracePts").value || "";
       DSTATE.inspanLimit = numberFrom("dzInspanLimit", 360);
       DSTATE.swayLimit = numberFrom("dzSwayLimit", 150);
-      DSTATE.rootWarpingRestrained = document.getElementById("dzLtbRoot").value === "restrained";
+      DSTATE.mcrRootRestraints = {
+        v: document.getElementById("dzFeRootV").checked,
+        slope: document.getElementById("dzFeRootSlope").checked,
+        twist: document.getElementById("dzFeRootTwist").checked,
+        warping: document.getElementById("dzFeRootWarp").checked
+      };
+      DSTATE.mcrTipRestraints = {
+        v: document.getElementById("dzFeTipV").checked,
+        slope: document.getElementById("dzFeTipSlope").checked,
+        twist: document.getElementById("dzFeTipTwist").checked,
+        warping: document.getElementById("dzFeTipWarp").checked
+      };
+      DSTATE.rootWarpingRestrained = DSTATE.mcrRootRestraints.warping;
       DSTATE.ltbRoot = "lat-torsion";
       DSTATE.ltbTip = "free";
       DSTATE.ltbDestabilizing = false;
@@ -9137,7 +9218,7 @@ if (typeof document !== "undefined") init();
       document.querySelectorAll("#designTab .dz-fe").forEach(function (el) { el.style.display = ec3 && DSTATE.mcrMethod === "fe" ? "" : "none"; });
       document.querySelectorAll("#designTab .dz-ncci").forEach(function (el) { el.style.display = ec3 && DSTATE.mcrMethod === "ncci" ? "" : "none"; });
       document.getElementById("dzNote").textContent = ec3
-        ? "BS EN 1993-1-1 UK NA member scope. Column forces come from the explicit ULS combination in Frame inputs; deflection checks use the explicit SLS combination. Mcr uses either the dedicated fixed-free Vlasov eigenvalue solver or the selected NCCI route."
+        ? "BS EN 1993-1-1 UK NA member scope. Column forces come from the explicit ULS combination in Frame inputs; deflection checks use the explicit SLS combination. FE Mcr uses the separately declared v, v-prime, twist and warping end restraints; manual effective lengths do not change the FE boundary."
         : "BS 5950-1:2000 member design. Column forces come from the explicit ULS combination in Frame inputs; deflection checks use the explicit SLS combination. Minor-axis restraint points exclude horizontal cantilever arms.";
     }
 
@@ -9149,7 +9230,7 @@ if (typeof document !== "undefined") init();
       refresh();
     });
 
-    var changeIds = ["dzCode", "dzGrade", "dzBaseFixity", "dzKx", "dzKy", "dzKt", "dzKlt", "dzEcKlt", "dzMcrMethod", "dzInspanLimit", "dzSwayLimit", "dzLtbRoot", "dzPfcTorsion"];
+    var changeIds = ["dzCode", "dzGrade", "dzBaseFixity", "dzKx", "dzKy", "dzKt", "dzKlt", "dzEcKlt", "dzMcrMethod", "dzInspanLimit", "dzSwayLimit", "dzFeRootV", "dzFeRootSlope", "dzFeRootTwist", "dzFeRootWarp", "dzFeTipV", "dzFeTipSlope", "dzFeTipTwist", "dzFeTipWarp", "dzPfcTorsion"];
     changeIds.forEach(function (id) {
       document.getElementById(id).addEventListener("change", function () { syncDesignState(); syncVisibility(); refresh(); });
     });
@@ -9337,7 +9418,7 @@ if (typeof document !== "undefined") init();
       var majorK, baseFixedForMcr;
       if (DSTATE.baseFixity === "partial") {
         majorK = Number.isFinite(baseModel.Kpartial) ? baseModel.Kpartial : DSTATE.Kx;
-        baseFixedForMcr = true;              // tie restrains the base; Mcr uses fixed-free as an upper bound
+        baseFixedForMcr = true;              // retained for legacy calls; the explicit FE restraint table governs Mcr
       } else if (DSTATE.baseFixity === "manual") {
         majorK = DSTATE.Kx;
         baseFixedForMcr = caseResult.input.leftSupport === "fixed";
@@ -9367,6 +9448,8 @@ if (typeof document !== "undefined") init();
         baseModelInfo: baseModel,
         swayMode: true,
         rootWarpingRestrained: DSTATE.rootWarpingRestrained,
+        mcrRootRestraints: Object.assign({}, DSTATE.mcrRootRestraints),
+        mcrTipRestraints: Object.assign({}, DSTATE.mcrTipRestraints),
         axis: si.minor ? "minor" : "major",
         ltbRoot: DSTATE.ltbRoot,
         ltbTip: DSTATE.ltbTip,

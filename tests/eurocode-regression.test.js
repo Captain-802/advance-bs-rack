@@ -240,6 +240,18 @@ close(fixedFree12.Mcr, fixedFree32.Mcr, fixedFree32.Mcr * 2e-5, "Fixed-free FE M
 assert.equal(fixedFree32.topFree, true);
 assert.ok(fixedFree32.Mcr < masterNcci.Mcr, "A free-tip FE model must not inherit the NCCI fork-end stiffness");
 
+const forkEnded32 = MCR.mcrEigen({
+  L: masterLength, Iz: 971.2e4, It: 23.81e4, Iw: 0.2852e12,
+  momentSegments: masterMomentSegments, subdivisions: 32,
+  rootRestraints: { v: true, slope: false, twist: true, warping: false },
+  tipRestraints: { v: true, slope: false, twist: true, warping: false }
+});
+assert.ok(forkEnded32.method.includes("user-defined end restraints"));
+assert.deepEqual(forkEnded32.rootRestraints, { v: true, slope: false, twist: true, warping: false });
+assert.deepEqual(forkEnded32.tipRestraints, { v: true, slope: false, twist: true, warping: false });
+assert.equal(forkEnded32.topFree, false);
+assert.ok(forkEnded32.Mcr > fixedFree32.Mcr, "Declared fork restraints at both ends must change the FE eigenvalue");
+
 const major = EC3.designColumnEC3(inputFor(uc203(), "major"));
 const minor = EC3.designColumnEC3(inputFor(uc203(), "minor"));
 assert.equal(major.status, "PASS");
@@ -276,6 +288,22 @@ nonFixedFeInput.columnBaseFixed = false;
 const nonFixedFe = EC3.designColumnEC3(nonFixedFeInput);
 assert.equal(nonFixedFe.status, "UNVERIFIED");
 assert.ok(nonFixedFe.issues.some((issue) => issue.includes("requires a fixed column base")));
+
+const explicitBoundaryK1Input = inputFor(uc203(), "major");
+explicitBoundaryK1Input.columnBaseFixed = false;
+explicitBoundaryK1Input.Kx = explicitBoundaryK1Input.KyMajor = 1.0;
+explicitBoundaryK1Input.mcrRootRestraints = { v: true, slope: false, twist: true, warping: false };
+explicitBoundaryK1Input.mcrTipRestraints = { v: true, slope: false, twist: true, warping: false };
+const explicitBoundaryK1 = EC3.designColumnEC3(explicitBoundaryK1Input);
+assert.ok(!explicitBoundaryK1.issues.some((issue) => issue.includes("requires a fixed column base")));
+assert.ok(explicitBoundaryK1.derived.feMcrResult && explicitBoundaryK1.derived.feMcrResult.Mcr > 0);
+
+const explicitBoundaryK26Input = Object.assign({}, explicitBoundaryK1Input, { Kx: 2.6, KyMajor: 2.6 });
+const explicitBoundaryK26 = EC3.designColumnEC3(explicitBoundaryK26Input);
+close(explicitBoundaryK26.derived.Mcr, explicitBoundaryK1.derived.Mcr, explicitBoundaryK1.derived.Mcr * 1e-12,
+  "Manual compression effective length must not silently alter the declared FE Mcr boundary");
+assert.ok(explicitBoundaryK26.derived.NcrY < explicitBoundaryK1.derived.NcrY,
+  "Manual compression effective length must still alter the flexural buckling resistance model");
 
 const ubCombined = EC3.designColumnEC3(inputFor(ub356(), "major"));
 assert.notEqual(ubCombined.status, "UNVERIFIED");

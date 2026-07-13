@@ -505,13 +505,14 @@
     }
     var feMcrResult = null;
     if (selectedMcrMethod === "fe" && !isBox && !isChan && axis === "major" && MyEd > 1e-6) {
-      if (inp.columnTopFree === false) {
+      var customFeBoundary = !!(inp.mcrRootRestraints || inp.mcrTipRestraints);
+      if (!customFeBoundary && inp.columnTopFree === false) {
         addIssue("The fixed-free FE Mcr method requires the column tip to be unrestrained.");
-      } else if (inp.columnBaseFixed === false) {
+      } else if (!customFeBoundary && inp.columnBaseFixed === false) {
         addIssue("The fixed-free FE Mcr method requires a fixed column base in the frame model.");
       } else {
         try {
-          feMcrResult = MCR_ENGINE.mcrEigenFixedFree({
+          var eigenOptions = {
             L: inp.H,
             Iz: Iz,
             It: It,
@@ -519,9 +520,16 @@
             momentSegments: inp.momentSegments,
             rootWarpingRestrained: !!inp.rootWarpingRestrained,
             subdivisions: 24
-          });
+          };
+          if (customFeBoundary) {
+            eigenOptions.rootRestraints = inp.mcrRootRestraints;
+            eigenOptions.tipRestraints = inp.mcrTipRestraints;
+            feMcrResult = MCR_ENGINE.mcrEigen(eigenOptions);
+          } else {
+            feMcrResult = MCR_ENGINE.mcrEigenFixedFree(eigenOptions);
+          }
         } catch (feError) {
-          addIssue("Fixed-free FE Mcr could not be calculated: " + feError.message);
+          addIssue("FE Mcr could not be calculated for the selected end restraints: " + feError.message);
         }
       }
     }
@@ -550,13 +558,13 @@
       return detail + "; " + result.equation;
     }
     block("Equivalent Moment Factors");
-    line("Mcr method", selectedMcrMethod === "fe" ? "Dedicated 1D Vlasov eigenvalue model; fixed root and free column tip" : "NCCI SN003 coefficient route matching the MasterSeries output format", selectedMcrMethod === "fe" ? "FE eigenvalue" : "NCCI");
+    line("Mcr method", selectedMcrMethod === "fe" ? "Dedicated 1D Vlasov eigenvalue model using the declared root and tip v, v-prime, phi and phi-prime restraints" : "NCCI SN003 coefficient route matching the MasterSeries output format", selectedMcrMethod === "fe" ? "FE eigenvalue" : "NCCI");
     line("C1 = fn(M1, M2, M0, psi, mu)",
       "M1=" + ft(ncciC1Result.M1, 3) + ", M2=" + ft(ncciC1Result.M2, 3) + ", M0=" + ft(ncciC1Result.M0, 3) +
       " kN.m; psi=" + ft(ncciC1Result.psi, 3) + ", mu=" + ft(ncciC1Result.mu, 3) +
       "; M(L/4), M(L/2), M(3L/4)=" + ft(ncciC1Result.Mq1, 3) + ", " + ft(ncciC1Result.Mmid, 3) + ", " + ft(ncciC1Result.Mq3, 3),
       f3(ncciC1Result.C1), "", "NCCI");
-    if (feMcrResult) line("C1,eff from FE", "Mcr(actual diagram) / Mcr(uniform moment), using identical fixed-free mesh and root warping condition", f3(C1), "", "FE");
+    if (feMcrResult) line("C1,eff from FE", "Mcr(actual diagram) / Mcr(uniform moment), using the identical mesh and declared end restraints", f3(C1), "", "FE");
     line("Cmy", cmySwayOverride ? "Table B.3 sway-buckling override for y-y bending; diagram value " + f3(CmyDiagram) + " is not used" : cmDescription(cmyResult, "z-z braced"), f3(Cmy));
     line("Cmz", cmzSwayOverride ? "Table B.3 sway-buckling override for z-z bending; diagram value " + f3(CmzDiagram) + " is not used" : cmDescription(cmzResult, "y-y braced"), f3(Cmz));
     line("CmLT", cmDescription(cmltResult, "y-y braced"), f3(CmLT));
@@ -615,9 +623,18 @@
           mcrResult = feMcrResult;
           Mcr = feMcrResult.Mcr;
           C1 = feMcrResult.C1;
-          mcrMethod = "1D Vlasov FE eigenvalue; fixed root, free tip";
+          mcrMethod = feMcrResult.method;
           line("FE eigenproblem", "[KE - alpha KG] delta = 0; actual signed moment diagram; " + feMcrResult.elements + " elements, " + feMcrResult.freeDof + " free DOF", "alpha=" + f3(feMcrResult.alpha));
-          line("FE boundary", "root v, v-prime and twist restrained; root warping " + (feMcrResult.rootWarpingRestrained ? "restrained" : "free") + "; no column-tip DOF restrained", "Fixed-free", "", "OK");
+          function restraintSummary(state) {
+            state = state || {};
+            var labels = [];
+            if (state.v) labels.push("v");
+            if (state.slope) labels.push("v-prime");
+            if (state.twist) labels.push("phi");
+            if (state.warping) labels.push("phi-prime");
+            return labels.length ? labels.join(", ") + " restrained" : "all four DOF free";
+          }
+          line("FE boundary", "root: " + restraintSummary(feMcrResult.rootRestraints) + "; tip: " + restraintSummary(feMcrResult.tipRestraints), feMcrResult.topFree ? "Free tip" : "User-defined tip", "", "OK");
           line("Mcr,uniform", "identical FE mesh under uniform moment; used only to derive C1,eff", f3(feMcrResult.McrUniform / 1e6), "kN.m");
         }
       } else {
@@ -626,7 +643,7 @@
           mcrResult = MCR_ENGINE.mcrSN003({ L: inp.H, Iz: Iz, It: It, Iw: Iw, k: ncciK, kw: 1, C1: C1, C2: 0, zg: 0 });
           Mcr = mcrResult.Mcr;
           mcrMethod = "NCCI SN003 / MasterSeries-style C1; k=" + f3(ncciK);
-          line("NCCI parameters", "C1=" + f3(C1) + ", k=" + f3(ncciK) + ", kw=1, C2 zg=0; column FE model remains fixed-free", "MasterSeries-style");
+          line("NCCI parameters", "C1=" + f3(C1) + ", k=" + f3(ncciK) + ", kw=1, C2 zg=0; the editable FE restraint table is not used by this route", "MasterSeries-style");
           addIssue("The NCCI SN003 expression requires lateral and torsional restraint at both member ends; the free column tip does not satisfy that scope. The MasterSeries-style result is shown for comparison only and does not add a fork restraint to the frame model.");
         } catch (snError) {
           addIssue("SN003 Mcr could not be calculated: " + snError.message);

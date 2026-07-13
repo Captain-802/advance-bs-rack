@@ -177,7 +177,7 @@
         var sum = matrix[i][j];
         for (var k = 0; k < j; k++) sum -= lower[i][k] * lower[j][k];
         if (i === j) {
-          if (sum <= tolerance) throw new Error("Elastic LTB stiffness is not positive definite after applying the root restraints.");
+          if (sum <= tolerance) throw new Error("Elastic LTB stiffness is not positive definite after applying the FE boundary restraints.");
           lower[i][j] = Math.sqrt(sum);
         } else {
           lower[i][j] = sum / lower[j][j];
@@ -246,7 +246,35 @@
     return points.filter(function (point, index) { return index === 0 || Math.abs(point - points[index - 1]) > 1e-6; });
   }
 
-  function solveFixedFreeEigen(options, segments, nodes) {
+  function restraintState(value, fallback) {
+    value = value || {};
+    fallback = fallback || { v: false, slope: false, twist: false, warping: false };
+    return {
+      v: value.v == null ? !!fallback.v : !!value.v,
+      slope: value.slope == null ? !!fallback.slope : !!value.slope,
+      twist: value.twist == null ? !!fallback.twist : !!value.twist,
+      warping: value.warping == null ? !!fallback.warping : !!value.warping
+    };
+  }
+
+  function boundaryRestraints(options) {
+    var defaultRoot = { v: true, slope: true, twist: true, warping: !!options.rootWarpingRestrained };
+    var defaultTip = { v: false, slope: false, twist: false, warping: false };
+    return {
+      root: restraintState(options.rootRestraints, defaultRoot),
+      tip: restraintState(options.tipRestraints, defaultTip)
+    };
+  }
+
+  function addEndRestraints(target, nodeIndex, state) {
+    var base = 4 * nodeIndex;
+    if (state.v) target.add(base);
+    if (state.slope) target.add(base + 1);
+    if (state.twist) target.add(base + 2);
+    if (state.warping) target.add(base + 3);
+  }
+
+  function solveVlasovEigen(options, segments, nodes, boundary) {
     var length = options.L;
     var Iz = options.Iz;
     var It = options.It;
@@ -273,14 +301,16 @@
       }
     }
 
-    var restrained = new Set([0, 1, 2]);
-    if (options.rootWarpingRestrained) restrained.add(3);
+    var restrained = new Set();
+    addEndRestraints(restrained, 0, boundary.root);
+    addEndRestraints(restrained, nodes.length - 1, boundary.tip);
     var free = [];
     for (var degree = 0; degree < elastic.length; degree++) if (!restrained.has(degree)) free.push(degree);
+    if (!free.length) throw new Error("All LTB degrees of freedom are restrained.");
     var elasticReduced = free.map(function (row) { return free.map(function (column) { return elastic[row][column]; }); });
     var geometricReduced = free.map(function (row) { return free.map(function (column) { return geometric[row][column]; }); });
     var diagonalScale = elasticReduced.map(function (row, index) {
-      if (!(Math.abs(row[index]) > 0)) throw new Error("Elastic LTB stiffness has a zero diagonal after root restraints.");
+      if (!(Math.abs(row[index]) > 0)) throw new Error("Elastic LTB stiffness has a zero diagonal after applying the FE boundary restraints.");
       return 1 / Math.sqrt(Math.abs(row[index]));
     });
     var elasticScaled = elasticReduced.map(function (row, i) { return row.map(function (value, j) { return value * diagonalScale[i] * diagonalScale[j]; }); });
@@ -299,7 +329,7 @@
     return { alpha: 1 / Math.abs(governing), eigenvalue: governing, freeDof: free.length, restraints: restrained.size };
   }
 
-  function mcrEigenFixedFree(options) {
+  function mcrEigen(options) {
     options = options || {};
     var length = positive(options.L, "L");
     positive(options.Iz, "Iz");
@@ -317,13 +347,16 @@
     if (!(maximumMoment > 1e-9)) throw new Error("No major-axis moment is present for the FE Mcr calculation.");
     var subdivisions = Math.max(12, Math.min(48, Math.round(Number(options.subdivisions) || 24)));
     var nodes = eigenMesh(length, segments, subdivisions);
-    var actual = solveFixedFreeEigen(options, segments, nodes);
+    var boundary = boundaryRestraints(options);
+    var actual = solveVlasovEigen(options, segments, nodes, boundary);
     var uniformSegments = [{ y1: 0, y2: length, M1: signedMaximum, M2: signedMaximum }];
-    var uniform = solveFixedFreeEigen(options, uniformSegments, nodes);
+    var uniform = solveVlasovEigen(options, uniformSegments, nodes, boundary);
     var Mcr = actual.alpha * maximumMoment * 1e6;
     var McrUniform = uniform.alpha * maximumMoment * 1e6;
+    var topFree = !boundary.tip.v && !boundary.tip.slope && !boundary.tip.twist && !boundary.tip.warping;
+    var fixedRoot = boundary.root.v && boundary.root.slope && boundary.root.twist;
     return {
-      method: "1D Vlasov FE eigenvalue; fixed root, free tip",
+      method: fixedRoot && topFree ? "1D Vlasov FE eigenvalue; fixed root, free tip" : "1D Vlasov FE eigenvalue; user-defined end restraints",
       Mcr: Mcr,
       McrUniform: McrUniform,
       C1: Mcr / McrUniform,
@@ -333,9 +366,20 @@
       nodes: nodes.length,
       elements: nodes.length - 1,
       freeDof: actual.freeDof,
-      rootWarpingRestrained: !!options.rootWarpingRestrained,
-      topFree: true
+      restraintCount: actual.restraints,
+      rootWarpingRestrained: boundary.root.warping,
+      rootRestraints: boundary.root,
+      tipRestraints: boundary.tip,
+      topFree: topFree
     };
+  }
+
+  function mcrEigenFixedFree(options) {
+    options = options || {};
+    return mcrEigen(Object.assign({}, options, {
+      rootRestraints: { v: true, slope: true, twist: true, warping: !!options.rootWarpingRestrained },
+      tipRestraints: { v: false, slope: false, twist: false, warping: false }
+    }));
   }
 
   var CANTILEVER_K = {
@@ -430,6 +474,7 @@
     c1QuarterPoint: c1QuarterPoint,
     c1EC3: c1EC3,
     masterSeriesC1: masterSeriesC1,
+    mcrEigen: mcrEigen,
     mcrEigenFixedFree: mcrEigenFixedFree,
     cantileverFactors: cantileverFactors,
     mcrSN003: mcrSN003,
